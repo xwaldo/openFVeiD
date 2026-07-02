@@ -1,0 +1,37 @@
+# compiled object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# precompiled headers
+*.gch
+*.pch
+
+# compiled dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# fortran module files
+*.mod
+
+# compiled static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# executables
+*.exe
+*.out
+*.app
+fvd
+
+# build
+build/
+*.log
+
+# local configuration
+imgui.ini
+options.cfg
