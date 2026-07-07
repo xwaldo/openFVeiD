@@ -1236,6 +1236,7 @@ void Viewport::drawTrack(trackHandler* hTrack, RenderPass pass) {
             for (auto& am : mesh->instancedAssets) {
                 if (am.vao != 0 && !am.instances.empty()) {
                     iShader->useUniform("isAsset", (GLuint)1);
+                    iShader->useUniform("uSmoothAlongSpline", (GLuint)(am.smoothNormalsAlongSpline ? 1 : 0));
                     glBindVertexArray(am.vao);
                     glDrawElementsInstanced(GL_TRIANGLES, am.indexCount, GL_UNSIGNED_INT, 0, (GLsizei)am.instances.size());
                 }
@@ -1243,6 +1244,7 @@ void Viewport::drawTrack(trackHandler* hTrack, RenderPass pass) {
             for (auto& am : mesh->instancedExtrusions) {
                 if (am.vao != 0 && !am.instances.empty()) {
                     iShader->useUniform("isAsset", (GLuint)0);
+                    iShader->useUniform("uSmoothAlongSpline", (GLuint)0);
                     glBindVertexArray(am.vao);
                     glDrawElementsInstanced(GL_TRIANGLES, am.indexCount, GL_UNSIGNED_INT, 0, (GLsizei)am.instances.size());
                 }

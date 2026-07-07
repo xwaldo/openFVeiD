@@ -406,6 +406,15 @@ void LeftPanel::renderTrackProperties(trackHandler* hTrack, Application* app) {
                     BEGIN_PROP_TABLE("AssetTable")
 
                     PROP_ROW(
+                        "Shade Smooth",
+                        if (ImGui::Checkbox("##ShadeSmooth", &asset.smoothAlongSpline)) {
+                            myTrack->requestUpdateTrack(0, 0);
+                            myTrack->processPendingUpdates();
+                        } if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("When enabled, the asset uses a spline-aligned normal frame so its shading blends smoothly along the track");
+                        })
+
+                    PROP_ROW(
                         "File",
                         if (ImGui::Button(asset.filepath.empty() ? "Browse..." : asset.filepath.c_str())) {
                             auto selection = pfd::open_file("Select Asset", ".", {"glTF Files", "*.gltf *.glb"}).result();

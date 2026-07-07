@@ -89,6 +89,7 @@ bool CustomTrackStyle::load(const std::string& filepath) {
         v.pos = glm::vec3(0.0f);
         v.normal = glm::vec3(0.0f, 1.0f, 0.0f);
         v.uv = glm::vec2(0.0f);
+        v.faceRefZ = 0.0f;
 
         float p[3] = {0.0f, 0.0f, 0.0f};
         cgltf_accessor_read_float(posAccessor, i, p, 3);
@@ -131,6 +132,17 @@ bool CustomTrackStyle::load(const std::string& filepath) {
         for (int i = 0; i < numVertices; ++i) {
             indices.push_back(i);
         }
+    }
+
+    for (size_t t = 0; t + 2 < indices.size(); t += 3) {
+        unsigned int i0 = indices[t];
+        unsigned int i1 = indices[t + 1];
+        unsigned int i2 = indices[t + 2];
+
+        float avgZ = (vertices[i0].pos.z + vertices[i1].pos.z + vertices[i2].pos.z) / 3.0f;
+        vertices[i0].faceRefZ = avgZ;
+        vertices[i1].faceRefZ = avgZ;
+        vertices[i2].faceRefZ = avgZ;
     }
 
     LOG_DEBUG("Freeing data...");
