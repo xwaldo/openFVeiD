@@ -60,10 +60,16 @@ struct TrackUniforms {
     glm::vec4 sectionColor;
     glm::vec4 transitionColor;
     glm::vec4 mistColor;
+    glm::vec4 ambientColor;
+    glm::vec4 sunColor;
     int32_t colorMode;
     int32_t mistEnabled;
     float mistNear;
     float mistFar;
+    float ambientStrength;
+    float sunStrength;
+    float padding0;
+    float padding1;
 };
 
 struct TrackInstancedUniforms {
@@ -76,6 +82,8 @@ struct TrackInstancedUniforms {
     glm::vec4 sectionColor;
     glm::vec4 transitionColor;
     glm::vec4 mistColor;
+    glm::vec4 ambientColor;
+    glm::vec4 sunColor;
     int32_t colorMode;
     int32_t mistEnabled;
     float mistNear;
@@ -84,7 +92,10 @@ struct TrackInstancedUniforms {
     float heartline;
     int32_t isAsset;
     int32_t smoothAlongSpline;
-    int32_t padding;
+    float ambientStrength;
+    float sunStrength;
+    float padding0;
+    float padding1;
 };
 
 struct StlUniforms {
@@ -95,14 +106,16 @@ struct StlUniforms {
     glm::vec4 lightDir;
     glm::vec4 solidColor;
     glm::vec4 mistColor;
+    glm::vec4 ambientColor;
+    glm::vec4 sunColor;
     int32_t wire;
     float edgeWidth;
     int32_t mistEnabled;
     float mistNear;
     float mistFar;
+    float ambientStrength;
+    float sunStrength;
     float padding0;
-    float padding1;
-    float padding2;
 };
 
 struct SimpleShadowUniforms {

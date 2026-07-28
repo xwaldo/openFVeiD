@@ -1121,6 +1121,26 @@ void LeftPanel::renderEnvironmentTab() {
         PROP_ROW(
             "Enable Shadows", if (ImGui::Checkbox("##EnableShadows", &gloParent->mOptions->shadowsEnabled)) { if (gViewport) gViewport->setShadowMode(gloParent->mOptions->shadowsEnabled ? 1 : 0); })
         PROP_ROW(
+            "Sun Light", if (ImGui::SliderFloat("##SunLight", &gloParent->mOptions->sunLightStrength, 0.0f, 2.0f, "%.2f")) {
+                if (gViewport)
+                    gViewport->markSceneDirty();
+            })
+        PROP_ROW(
+            "Sun Color", if (ImGui::ColorEdit3("##SunColor", &gloParent->mOptions->sunLightColor.x)) {
+                if (gViewport)
+                    gViewport->markSceneDirty();
+            })
+        PROP_ROW(
+            "Ambient Light", if (ImGui::SliderFloat("##AmbientLight", &gloParent->mOptions->ambientLightStrength, 0.0f, 2.0f, "%.2f")) {
+                if (gViewport)
+                    gViewport->markSceneDirty();
+            })
+        PROP_ROW(
+            "Ambient Color", if (ImGui::ColorEdit3("##AmbientColor", &gloParent->mOptions->ambientLightColor.x)) {
+                if (gViewport)
+                    gViewport->markSceneDirty();
+            })
+        PROP_ROW(
             "Sun Pitch", if (ImGui::SliderFloat("##SunPitch", &gloParent->mOptions->sunPitch, -90.0f, 0.0f, "%.1f deg")) {
                 if (gViewport)
                     gViewport->setLightDirection(gloParent->mOptions->sunPitch, gloParent->mOptions->sunYaw);

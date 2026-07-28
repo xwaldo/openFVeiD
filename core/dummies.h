@@ -72,6 +72,10 @@ struct DummyOptions {
     bool relativeExport = false;     // Relative NoLimits 2 export coordinate behaviour
     float sunPitch = -90.0f;         // Directly above
     float sunYaw = 0.0f;
+    float sunLightStrength = 1.0f;
+    glm::vec3 sunLightColor = glm::vec3(1.0f);
+    float ambientLightStrength = 0.72f;
+    glm::vec3 ambientLightColor = glm::vec3(1.0f);
     float stallSpeed = 0.1f;
     float graphSpacingLimit = 0.1f;
     float scrollCtrlIncrement = 1.0f;
@@ -143,7 +147,15 @@ struct DummyOptions {
             for (int i = 0; i < 14; ++i) {
                 out << graphColors[i].x << " " << graphColors[i].y << " " << graphColors[i].z << " ";
             }
-            out << "\n";
+            out << "\n"
+                << ambientLightStrength << " "
+                << ambientLightColor.x << " "
+                << ambientLightColor.y << " "
+                << ambientLightColor.z << "\n"
+                << sunLightStrength << " "
+                << sunLightColor.x << " "
+                << sunLightColor.y << " "
+                << sunLightColor.z << "\n";
         }
     }
 
@@ -160,6 +172,28 @@ struct DummyOptions {
                 for (int i = 0; i < 14; ++i) {
                     if (!(in >> graphColors[i].x >> graphColors[i].y >> graphColors[i].z))
                         break;
+                }
+
+                // Added after the original V1 fields so existing option files
+                // remain valid and retain the defaults when values are absent.
+                float savedAmbientStrength;
+                glm::vec3 savedAmbientColor;
+                if (in >> savedAmbientStrength
+                       >> savedAmbientColor.x
+                       >> savedAmbientColor.y
+                       >> savedAmbientColor.z) {
+                    ambientLightStrength = savedAmbientStrength;
+                    ambientLightColor = savedAmbientColor;
+                }
+
+                float savedSunStrength;
+                glm::vec3 savedSunColor;
+                if (in >> savedSunStrength
+                       >> savedSunColor.x
+                       >> savedSunColor.y
+                       >> savedSunColor.z) {
+                    sunLightStrength = savedSunStrength;
+                    sunLightColor = savedSunColor;
                 }
             }
         }

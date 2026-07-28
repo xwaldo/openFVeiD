@@ -38,7 +38,6 @@ void main(void)
 
     if (u.grid == 1) oFragColor.xyz *= (texture(rasterTex, rasterCoord).x);
 
-    // Standard Ambient lighting model
     vec3 finalColor = oFragColor.xyz * 0.8;
 
     // Apply mist

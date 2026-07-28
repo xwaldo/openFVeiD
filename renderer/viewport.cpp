@@ -29,6 +29,7 @@
 #include "dummies.h"
 #include "glbreader.h"
 #include "customstyle.h"
+#include "assets.h"
 #include <glm/gtc/type_ptr.hpp>
 #include <iostream>
 #include <algorithm>
@@ -40,6 +41,22 @@
 #include "stb_image_write.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+
+static bool loadEmbeddedTexture(const char* name, VulkanTexture& texture) {
+    const AssetData* asset = getEmbeddedAsset(name);
+    if (!asset || !asset->data || asset->size == 0)
+        return false;
+
+    int width = 0, height = 0, channels = 0;
+    unsigned char* pixels = stbi_load_from_memory(asset->data, (int)asset->size,
+                                                  &width, &height, &channels, 4);
+    if (!pixels)
+        return false;
+
+    texture.create2d(*gVulkanContext, (uint32_t)width, (uint32_t)height, pixels);
+    stbi_image_free(pixels);
+    return true;
+}
 
 Viewport::Viewport()
     : viewPortWidth(1280), viewPortHeight(720),
@@ -125,6 +142,8 @@ void Viewport::shutdown() {
     rasterTexture.destroy();
     dummyCubeTexture.destroy();
     dummyWhiteTexture.destroy();
+    metalNormalTexture.destroy();
+    metalRoughnessTexture.destroy();
     zeroAttributeBuffer.destroy();
     skyMesh.vertexBuffer.destroy();
     floorMesh.vertexBuffer.destroy();
@@ -271,6 +290,15 @@ void Viewport::initTextures() {
 
     unsigned char cubeFaces[6 * 4] = {};
     dummyCubeTexture.createCube(*gVulkanContext, 1, 1, cubeFaces);
+
+    if (!loadEmbeddedTexture("metal_normal.png", metalNormalTexture)) {
+        const unsigned char flatNormal[4] = {128, 128, 255, 255};
+        metalNormalTexture.create2d(*gVulkanContext, 1, 1, flatNormal);
+    }
+    if (!loadEmbeddedTexture("metal_roughness.jpg", metalRoughnessTexture)) {
+        const unsigned char defaultRoughness[4] = {160, 160, 160, 255};
+        metalRoughnessTexture.create2d(*gVulkanContext, 1, 1, defaultRoughness);
+    }
 
     bool customSkybox = true;
     for (int i = 0; i < 6; ++i) {
@@ -470,15 +498,18 @@ void Viewport::initPipelines() {
     };
     VulkanPipelineConfig trackInstancedConfig = {
         .vertexSpirvPath = locateSpirvShader("track_instanced.vert"),
-        .fragmentSpirvPath = locateSpirvShader("track.frag"),
+        .fragmentSpirvPath = locateSpirvShader("track_instanced.frag"),
         .vertexBindings = instancedBindings,
         .vertexAttributes = instancedAttributes,
         .alphaBlend = true,
+        .sampledImageCount = 2,
         .uniformBufferSize = sizeof(TrackInstancedUniforms),
         .usesStorageSet = true,
     };
     trackInstancedConfig.sampleCount = currentSampleCount;
     trackInstancedPipeline.create(*gVulkanContext, trackInstancedConfig);
+    trackInstancedPipeline.bindTexture(0, metalNormalTexture.view, metalNormalTexture.sampler);
+    trackInstancedPipeline.bindTexture(1, metalRoughnessTexture.view, metalRoughnessTexture.sampler);
 
     VulkanPipelineConfig shadowInstancedConfig = {
         .vertexSpirvPath = locateSpirvShader("simple_shadow.vert"),
@@ -1120,11 +1151,22 @@ void Viewport::drawSky(VkCommandBuffer commandBuffer) {
 }
 
 void Viewport::drawFloor(VkCommandBuffer commandBuffer) {
+    // Preserve the floor shader's stable uniform layout by folding its flat,
+    // upward-facing lighting into the existing color field.
+    float floorNDotL = std::max(-lightDir.y, 0.0f);
+    glm::vec3 floorLighting =
+        gloParent->mOptions->ambientLightColor *
+            gloParent->mOptions->ambientLightStrength +
+        gloParent->mOptions->sunLightColor *
+            gloParent->mOptions->sunLightStrength * floorNDotL * 0.5f;
+    glm::vec3 litFloorColor =
+        gloParent->mOptions->floorColor * floorLighting / 0.8f;
+
     FloorUniforms uniforms = {
         .projectionMatrix = ProjectionMatrix,
         .modelMatrix = ModelMatrix,
         .eyePos = glm::vec4(cameraPos, 1.0f),
-        .floorColor = glm::vec4(gloParent->mOptions->floorColor, 1.0f),
+        .floorColor = glm::vec4(litFloorColor, 1.0f),
         .mistColor = glm::vec4(gloParent->mOptions->mistColor, 1.0f),
         .grdTexSize = grdTexSize,
         .opacity = 1.0f,
@@ -1158,11 +1200,15 @@ void Viewport::drawMarkers(VkCommandBuffer commandBuffer) {
         .lightDir = glm::vec4(lightDir, 0.0f),
         .solidColor = glm::vec4(1.0f),
         .mistColor = glm::vec4(gloParent->mOptions->mistColor, 1.0f),
+        .ambientColor = glm::vec4(gloParent->mOptions->ambientLightColor, 1.0f),
+        .sunColor = glm::vec4(gloParent->mOptions->sunLightColor, 1.0f),
         .wire = 0,
         .edgeWidth = 0.0f,
         .mistEnabled = gloParent->mOptions->mistEnabled ? 1 : 0,
         .mistNear = gloParent->mOptions->mistNear,
         .mistFar = gloParent->mOptions->mistFar,
+        .ambientStrength = gloParent->mOptions->ambientLightStrength,
+        .sunStrength = gloParent->mOptions->sunLightStrength,
     };
 
     VkDeviceSize zeroOffset = 0;
@@ -1273,11 +1319,15 @@ void Viewport::drawGlbs(VkCommandBuffer commandBuffer, RenderPass pass) {
         .lightDir = glm::vec4(lightDir, 0.0f),
         .solidColor = glm::vec4(1.0f),
         .mistColor = glm::vec4(gloParent->mOptions->mistColor, 1.0f),
+        .ambientColor = glm::vec4(gloParent->mOptions->ambientLightColor, 1.0f),
+        .sunColor = glm::vec4(gloParent->mOptions->sunLightColor, 1.0f),
         .wire = 0,
         .edgeWidth = 0.006f,
         .mistEnabled = gloParent->mOptions->mistEnabled ? 1 : 0,
         .mistNear = gloParent->mOptions->mistNear,
         .mistFar = gloParent->mOptions->mistFar,
+        .ambientStrength = gloParent->mOptions->ambientLightStrength,
+        .sunStrength = gloParent->mOptions->sunLightStrength,
     };
     for (const auto& sm : glbMeshes) {
         if (!sm.visible)
@@ -1347,6 +1397,8 @@ void Viewport::drawTrack(VkCommandBuffer commandBuffer, trackHandler* hTrack, Re
                     .sectionColor = glm::vec4(hTrack->trackColors[1], 1.0f),
                     .transitionColor = glm::vec4(hTrack->trackColors[2], 1.0f),
                     .mistColor = glm::vec4(gloParent->mOptions->mistColor, 1.0f),
+                    .ambientColor = glm::vec4(gloParent->mOptions->ambientLightColor, 1.0f),
+                    .sunColor = glm::vec4(gloParent->mOptions->sunLightColor, 1.0f),
                     .colorMode = curTrackShader,
                     .mistEnabled = gloParent->mOptions->mistEnabled ? 1 : 0,
                     .mistNear = gloParent->mOptions->mistNear,
@@ -1355,6 +1407,8 @@ void Viewport::drawTrack(VkCommandBuffer commandBuffer, trackHandler* hTrack, Re
                     .heartline = (float)myTrack->fHeart,
                     .isAsset = isAsset,
                     .smoothAlongSpline = smoothAlongSpline,
+                    .ambientStrength = gloParent->mOptions->ambientLightStrength,
+                    .sunStrength = gloParent->mOptions->sunLightStrength,
                 };
                 trackInstancedPipeline.bindWithUniforms(commandBuffer, &uniforms, sizeof(uniforms));
                 trackInstancedPipeline.bindStorageSet(commandBuffer, mesh->splineStorageSet);
@@ -1389,10 +1443,14 @@ void Viewport::drawTrack(VkCommandBuffer commandBuffer, trackHandler* hTrack, Re
             .sectionColor = glm::vec4(hTrack->trackColors[1], 1.0f),
             .transitionColor = glm::vec4(hTrack->trackColors[2], 1.0f),
             .mistColor = glm::vec4(gloParent->mOptions->mistColor, 1.0f),
+            .ambientColor = glm::vec4(gloParent->mOptions->ambientLightColor, 1.0f),
+            .sunColor = glm::vec4(gloParent->mOptions->sunLightColor, 1.0f),
             .colorMode = 0,
             .mistEnabled = gloParent->mOptions->mistEnabled ? 1 : 0,
             .mistNear = gloParent->mOptions->mistNear,
             .mistFar = gloParent->mOptions->mistFar,
+            .ambientStrength = gloParent->mOptions->ambientLightStrength,
+            .sunStrength = gloParent->mOptions->sunLightStrength,
         };
         heartlinePipeline.bindWithUniforms(commandBuffer, &uniforms, sizeof(uniforms));
         VkBuffer buffers[2] = {mesh->heartlineBuffer.buffer, zeroAttributeBuffer.buffer};
@@ -1500,11 +1558,15 @@ void Viewport::drawOrthoGrid(VkCommandBuffer commandBuffer) {
         .lightDir = glm::vec4(lightDir, 0.0f),
         .solidColor = glm::vec4(1.0f),
         .mistColor = glm::vec4(gloParent->mOptions->mistColor, 1.0f),
+        .ambientColor = glm::vec4(1.0f),
+        .sunColor = glm::vec4(1.0f),
         .wire = 0,
         .edgeWidth = 0.0f,
         .mistEnabled = 0,
         .mistNear = 0.0f,
         .mistFar = 1.0f,
+        .ambientStrength = 1.2f,
+        .sunStrength = 0.0f,
     };
 
     auto drawLineBatch = [&](const std::vector<float>& vertices, glm::vec3 color) {

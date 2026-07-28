@@ -239,6 +239,8 @@ private:
     VulkanTexture rasterTexture;
     VulkanTexture dummyCubeTexture;
     VulkanTexture dummyWhiteTexture;
+    VulkanTexture metalNormalTexture;
+    VulkanTexture metalRoughnessTexture;
     VulkanBuffer zeroAttributeBuffer;
 
     Mesh skyMesh;
