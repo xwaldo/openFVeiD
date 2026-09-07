@@ -61,6 +61,7 @@ static bool loadEmbeddedTexture(const char* name, VulkanTexture& texture) {
 Viewport::Viewport()
     : viewPortWidth(1280), viewPortHeight(720),
       fov(90.0f), mistColor(0.15f, 0.15f, 0.15f),
+      grdHeight(0.0f),
       povMode(false), povPos(0), povNode(nullptr),
       viewMode(ViewMode::Perspective), orthoScale(50.0f),
       shadowMode(0), curTrackShader(0), msaaSamples(4),
@@ -580,10 +581,13 @@ void Viewport::initPipelines() {
     VulkanPipelineConfig markerConfig = {
         .vertexSpirvPath = locateSpirvShader("glb.vert"),
         .fragmentSpirvPath = locateSpirvShader("glb.frag"),
-        .vertexBindings = {{0, 3 * sizeof(float), VK_VERTEX_INPUT_RATE_VERTEX}},
+        .vertexBindings = {
+            {0, 3 * sizeof(float), VK_VERTEX_INPUT_RATE_VERTEX},
+            {zeroBinding, 0, VK_VERTEX_INPUT_RATE_VERTEX},
+        },
         .vertexAttributes = {
             {0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0},
-            {7, 0, VK_FORMAT_R32G32B32_SFLOAT, 0},
+            {7, zeroBinding, VK_FORMAT_R32G32B32_SFLOAT, 0},
             {8, zeroBinding, VK_FORMAT_R32G32_SFLOAT, 0},
         },
         .alphaBlend = true,
@@ -834,6 +838,9 @@ bool Viewport::addGlbMesh(const std::string& path) {
         // Create texture if present
         if (prim.hasTexture) {
             prim.texture.create2d(*gVulkanContext, primData.textureData.width, primData.textureData.height, primData.textureData.rgba.data());
+            prim.descriptorSets = glbPipeline.createDescriptorSets(prim.texture.view, prim.texture.sampler);
+        } else {
+            prim.descriptorSets = glbPipeline.createDescriptorSets(dummyWhiteTexture.view, dummyWhiteTexture.sampler);
         }
 
         gm.primitives.push_back(std::move(prim));
@@ -988,20 +995,22 @@ void Viewport::buildMatrices(float offset) {
             glm::dvec3 nextPD;
             glm::dvec3 diff(0.0);
 
-            while (nextPos < curTrack->getNumPoints()) {
-                nextNode = curTrack->getPoint(nextPos);
-                if (nextNode) {
-                    nextPD = nextNode->vRelPos(curTrack->povPos.y, curTrack->povPos.x);
-                    diff = nextPD - posD;
-                    if (glm::length(diff) > 0.05) {
-                        break;
+            if (gloParent->mOptions->lookAheadPovSmoothing) {
+                while (nextPos < curTrack->getNumPoints()) {
+                    nextNode = curTrack->getPoint(nextPos);
+                    if (nextNode) {
+                        nextPD = nextNode->vRelPos(curTrack->povPos.y, curTrack->povPos.x);
+                        diff = nextPD - posD;
+                        if (glm::length(diff) > 0.05) {
+                            break;
+                        }
                     }
+                    nextPos++;
                 }
-                nextPos++;
             }
 
             glm::vec3 direction;
-            if (glm::length(diff) > 0.05) {
+            if (gloParent->mOptions->lookAheadPovSmoothing && glm::length(diff) > 0.05) {
                 direction = glm::normalize(glm::vec3(diff));
             } else {
                 direction = glm::vec3(povNode->vDirHeart(curTrack->fHeart));
@@ -1042,22 +1051,24 @@ void Viewport::buildMatrices(float offset) {
     glm::vec3 N = glm::vec3(0.0f, 1.0f, 0.0f);
     float dotNL = glm::dot(N, L);
 
+    float H = gloParent->projectGrdHeight + 0.01f;
+
     shadowMatrix = glm::mat4(1.0f);
     if (std::abs(dotNL) > 0.0001f) {
         shadowMatrix[0][0] = 1.0f;
         shadowMatrix[1][0] = -L.x / L.y;
         shadowMatrix[2][0] = 0.0f;
-        shadowMatrix[3][0] = 0.01f * (L.x / L.y);
+        shadowMatrix[3][0] = H * (L.x / L.y);
 
         shadowMatrix[0][1] = 0.0f;
         shadowMatrix[1][1] = 0.0f;
         shadowMatrix[2][1] = 0.0f;
-        shadowMatrix[3][1] = 0.01f;
+        shadowMatrix[3][1] = H;
 
         shadowMatrix[0][2] = 0.0f;
         shadowMatrix[1][2] = -L.z / L.y;
         shadowMatrix[2][2] = 1.0f;
-        shadowMatrix[3][2] = 0.01f * (L.z / L.y);
+        shadowMatrix[3][2] = H * (L.z / L.y);
 
         shadowMatrix[0][3] = 0.0f;
         shadowMatrix[1][3] = 0.0f;
@@ -1168,6 +1179,7 @@ void Viewport::drawFloor(VkCommandBuffer commandBuffer) {
         .eyePos = glm::vec4(cameraPos, 1.0f),
         .floorColor = glm::vec4(litFloorColor, 1.0f),
         .mistColor = glm::vec4(gloParent->mOptions->mistColor, 1.0f),
+        .floorHeight = grdHeight,
         .grdTexSize = grdTexSize,
         .opacity = 1.0f,
         .border = 1,
@@ -1211,8 +1223,9 @@ void Viewport::drawMarkers(VkCommandBuffer commandBuffer) {
         .sunStrength = gloParent->mOptions->sunLightStrength,
     };
 
-    VkDeviceSize zeroOffset = 0;
-    vkCmdBindVertexBuffers(commandBuffer, 0, 1, &markerMesh.vertexBuffer.buffer, &zeroOffset);
+    VkBuffer buffers[2] = {markerMesh.vertexBuffer.buffer, zeroAttributeBuffer.buffer};
+    VkDeviceSize offsets[2] = {0, 0};
+    vkCmdBindVertexBuffers(commandBuffer, 0, 2, buffers, offsets);
     vkCmdBindIndexBuffer(commandBuffer, markerMesh.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
 
     for (size_t i = 0; i < myTrack->trainOffsets.size(); ++i) {
@@ -1338,13 +1351,9 @@ void Viewport::drawGlbs(VkCommandBuffer commandBuffer, RenderPass pass) {
             } else {
                 uniforms.solidColor = prim.baseColorFactor;
             }
-            glbPipeline.bindWithUniforms(commandBuffer, &uniforms, sizeof(uniforms));
 
-            if (prim.hasTexture) {
-                glbPipeline.bindTexture(0, prim.texture.view, prim.texture.sampler);
-            } else {
-                glbPipeline.bindTexture(0, dummyWhiteTexture.view, dummyWhiteTexture.sampler);
-            }
+            VkDescriptorSet descriptorSet = prim.descriptorSets[gVulkanContext->currentFrameIndex()];
+            glbPipeline.bindWithUniformsAndSet(commandBuffer, descriptorSet, &uniforms, sizeof(uniforms));
 
             vkCmdBindVertexBuffers(commandBuffer, 0, 1, &prim.mesh.vertexBuffer.buffer, &zeroOffset);
             vkCmdBindIndexBuffer(commandBuffer, prim.mesh.indexBuffer.buffer, 0, VK_INDEX_TYPE_UINT32);
@@ -1439,7 +1448,7 @@ void Viewport::drawTrack(VkCommandBuffer commandBuffer, trackHandler* hTrack, Re
             .anchorBase = anchorBase,
             .eyePos = glm::vec4(cameraPos, 1.0f),
             .lightDir = glm::vec4(lightDir, 0.0f),
-            .defaultColor = glm::vec4(0.9f, 0.9f, 0.4f, 1.0f),
+            .defaultColor = glm::vec4(hTrack->trackColors[3], 1.0f),
             .sectionColor = glm::vec4(hTrack->trackColors[1], 1.0f),
             .transitionColor = glm::vec4(hTrack->trackColors[2], 1.0f),
             .mistColor = glm::vec4(gloParent->mOptions->mistColor, 1.0f),
@@ -1586,4 +1595,25 @@ void Viewport::drawOrthoGrid(VkCommandBuffer commandBuffer) {
     drawLineBatch(xAxisVertices, glm::vec3(0.70f, 0.20f, 0.20f));
     drawLineBatch(yAxisVertices, glm::vec3(0.20f, 0.70f, 0.20f));
     drawLineBatch(zAxisVertices, glm::vec3(0.20f, 0.20f, 0.70f));
+}
+
+void Viewport::setPOVMode(bool enabled) {
+    if (enabled && activeTrack && activeTrack->trackData && activeTrack->trackData->isReferenceTrack()) {
+        enabled = false;
+    }
+    if (povMode != enabled) {
+        povMode = enabled;
+        sceneDirty = true;
+    }
+}
+
+void Viewport::setActiveTrack(trackHandler* track) {
+    if (activeTrack != track) {
+        activeTrack = track;
+        if (activeTrack && activeTrack->trackData && activeTrack->trackData->isReferenceTrack()) {
+            povMode = false;
+            povNode = nullptr;
+        }
+        sceneDirty = true;
+    }
 }

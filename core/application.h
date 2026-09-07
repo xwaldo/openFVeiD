@@ -19,6 +19,9 @@
 
 #pragma once
 
+class Application;
+extern Application* gApplication;
+
 #include "core/dummies.h"
 #include "renderer/viewport.h"
 #include "ui/graphview.h"
@@ -78,6 +81,7 @@ public:
     }
 
     void forkTrack(trackHandler* sourceTrack, int nodeIdx);
+    void importReferenceTrack(const std::string& path);
 
 private:
     void Update(float deltaTime);
@@ -121,10 +125,10 @@ private:
     bool showExportPopup = false;
     int exportFormat = 1; // NL2 CSV
     float exportDistPerNode = 1.0f;
-    float exportRollThresh = 30.0f;
     int exportFromSection = 0;
     int exportToSection = -1;
-    bool exportNoHeartline = false;
+    bool exportHeartline = false;
+    std::string exportNumFormat = "%.6f";
     std::string lastExportPath = "";
 
     // UI Components

@@ -47,6 +47,7 @@ struct GlbPrimitive {
     glm::vec4 baseColorFactor = glm::vec4(1.0f);
     bool hasTexture = false;
     VulkanTexture texture;
+    std::vector<VkDescriptorSet> descriptorSets;
 };
 
 struct GlbMesh {
@@ -100,6 +101,12 @@ public:
             sceneDirty = true;
         }
     }
+    void setGroundHeight(float height) {
+        if (grdHeight != height) {
+            grdHeight = height;
+            sceneDirty = true;
+        }
+    }
     bool loadGroundTexture(const std::string& path);
     bool addGlbMesh(const std::string& path);
     void removeGlbMesh(int index);
@@ -128,24 +135,14 @@ public:
     int getPOVPos() const {
         return povPos;
     }
-    void setPOVMode(bool enabled) {
-        if (povMode != enabled) {
-            povMode = enabled;
-            sceneDirty = true;
-        }
-    }
+    void setPOVMode(bool enabled);
     void setPOVPos(int pos) {
         if (povPos != pos) {
             povPos = pos;
             sceneDirty = true;
         }
     }
-    void setActiveTrack(trackHandler* track) {
-        if (activeTrack != track) {
-            activeTrack = track;
-            sceneDirty = true;
-        }
-    }
+    void setActiveTrack(trackHandler* track);
     void movePOVCamera(float deltaZ, float deltaTime);
     void adjustPOVHeight(float delta) {
         if (delta != 0.0f) {
@@ -261,6 +258,7 @@ private:
     float fov;
     glm::vec3 mistColor;
     float grdTexSize = 440.0f;
+    float grdHeight = 0.0f;
     int viewPortWidth, viewPortHeight;
 
     bool povMode;

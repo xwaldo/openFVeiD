@@ -187,14 +187,6 @@ void trackMesh::buildMeshes(int fromNode) {
             double t = (d1 > d0) ? (double)((d - d0) / (d1 - d0)) : 0.0;
             t = glm::clamp(t, 0.0, 1.0);
 
-            double heartOffset = (double)trackData->fHeart;
-            glm::dvec3 pos = glm::mix(n0->vPos, n1->vPos, t);
-            glm::dvec3 lat = glm::normalize(glm::mix(n0->vLatHeart(heartOffset), n1->vLatHeart(heartOffset), t));
-            glm::dvec3 norm = glm::normalize(glm::mix(n0->vNorm, n1->vNorm, t));
-            glm::dvec3 dir = glm::normalize(glm::mix(n0->vDirHeart(heartOffset), n1->vDirHeart(heartOffset), t));
-
-            pos += heartOffset * norm;
-
             float sel = 0.0f;
             int sectionIdx = -1, nodeInSec = -1;
 
@@ -209,6 +201,24 @@ void trackMesh::buildMeshes(int fromNode) {
                 }
                 runningSum += secNodes;
             }
+
+            bool isStatic = (sectionIdx >= 0 && trackData->lSections[sectionIdx]->type == static_spline);
+
+            double heartOffset = (double)trackData->fHeart;
+            glm::dvec3 pos = glm::mix(n0->vPos, n1->vPos, t);
+            glm::dvec3 lat;
+            glm::dvec3 norm = glm::normalize(glm::mix(n0->vNorm, n1->vNorm, t));
+            glm::dvec3 dir;
+
+            if (isStatic) {
+                lat = glm::normalize(glm::mix(n0->vLat, n1->vLat, t));
+                dir = glm::normalize(glm::mix(n0->vDir, n1->vDir, t));
+            } else {
+                lat = glm::normalize(glm::mix(n0->vLatHeart(heartOffset), n1->vLatHeart(heartOffset), t));
+                dir = glm::normalize(glm::mix(n0->vDirHeart(heartOffset), n1->vDirHeart(heartOffset), t));
+            }
+
+            pos += heartOffset * norm;
 
             if (sectionIdx >= 0) {
                 section* curSec = trackData->lSections[sectionIdx];
@@ -645,4 +655,27 @@ void trackMesh::generatePrimitives() {
         primitiveBox->vertices[i2].faceRefZ = avgZ;
     }
     primitiveBox->isValid = true;
+}
+
+size_t trackMesh::getTotalRenderedVertices() const {
+    size_t total = 0;
+
+    auto countInstanced = [&](const track_asset_mesh_t& am) {
+        if (am.instances.empty() || am.sourceModel == nullptr)
+            return (size_t)0;
+        return am.sourceModel->vertices.size() * am.instances.size();
+    };
+
+    // Sum up rails, crossties, and custom style extrusions
+    for (const auto& am : instancedAssets)
+        total += countInstanced(am);
+    for (const auto& am : instancedExtrusions)
+        total += countInstanced(am);
+
+    // Add heartline spline reference points
+    if (heartlineSize > 0) {
+        total += (size_t)heartlineSize;
+    }
+
+    return total;
 }
