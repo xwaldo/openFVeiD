@@ -40,13 +40,23 @@ struct Mesh {
     int count = 0;
 };
 
-struct StlMesh {
+struct GlbPrimitive {
     Mesh mesh;
     int vertexCount;
+    int indexCount;
+    glm::vec4 baseColorFactor = glm::vec4(1.0f);
+    bool hasTexture = false;
+    VulkanTexture texture;
+    std::vector<VkDescriptorSet> descriptorSets;
+};
+
+struct GlbMesh {
+    std::vector<GlbPrimitive> primitives;
     std::string path;
-    glm::vec3 color;
-    bool visible;
-    bool showWireframe;
+    bool visible = true;
+    bool selected = false;
+    glm::vec3 minAABB = glm::vec3(0.0f);
+    glm::vec3 maxAABB = glm::vec3(0.0f);
 };
 
 class Viewport {
@@ -91,9 +101,18 @@ public:
             sceneDirty = true;
         }
     }
+    void setGroundHeight(float height) {
+        if (grdHeight != height) {
+            grdHeight = height;
+            sceneDirty = true;
+        }
+    }
     bool loadGroundTexture(const std::string& path);
-    bool addStlMesh(const std::string& path);
-    void removeStlMesh(int index);
+    bool addGlbMesh(const std::string& path);
+    void removeGlbMesh(int index);
+    bool selectGlbAtRay(float ndcX, float ndcY);
+    bool hasSelectedGlb() const;
+    void deleteSelectedGlb();
 
     void markSceneDirty() {
         sceneDirty = true;
@@ -116,28 +135,24 @@ public:
     int getPOVPos() const {
         return povPos;
     }
-    void setPOVMode(bool enabled) {
-        if (povMode != enabled) {
-            povMode = enabled;
-            sceneDirty = true;
-        }
-    }
+    void setPOVMode(bool enabled);
     void setPOVPos(int pos) {
         if (povPos != pos) {
             povPos = pos;
             sceneDirty = true;
         }
     }
-    void setActiveTrack(trackHandler* track) {
-        if (activeTrack != track) {
-            activeTrack = track;
-            sceneDirty = true;
-        }
-    }
+    void setActiveTrack(trackHandler* track);
     void movePOVCamera(float deltaZ, float deltaTime);
     void adjustPOVHeight(float delta) {
         if (delta != 0.0f) {
             povHeightOffset += delta;
+            sceneDirty = true;
+        }
+    }
+    void resetPOVHeight() {
+        if (povHeightOffset != 0.0f) {
+            povHeightOffset = 0.0f;
             sceneDirty = true;
         }
     }
@@ -181,7 +196,7 @@ public:
     void captureScreenshot(int multiplier, const std::string& path, const std::vector<trackHandler*>& trackList);
 
     void* getOutputTexture();
-    std::vector<StlMesh> stlMeshes;
+    std::vector<GlbMesh> glbMeshes;
 
 private:
     void initPipelines();
@@ -199,7 +214,7 @@ private:
     };
 
     void drawTrack(VkCommandBuffer commandBuffer, trackHandler* track, RenderPass pass);
-    void drawStls(VkCommandBuffer commandBuffer, RenderPass pass);
+    void drawGlbs(VkCommandBuffer commandBuffer, RenderPass pass);
     void drawMarkers(VkCommandBuffer commandBuffer);
     void refreshOutputTexture();
 
@@ -211,8 +226,8 @@ private:
     VulkanPipeline heartlinePipeline;
     VulkanPipeline trackInstancedPipeline;
     VulkanPipeline shadowInstancedPipeline;
-    VulkanPipeline shadowStlPipeline;
-    VulkanPipeline stlPipeline;
+    VulkanPipeline shadowGlbPipeline;
+    VulkanPipeline glbPipeline;
     VulkanPipeline markerPipeline;
     VulkanPipeline orthoGridPipeline;
 
@@ -220,6 +235,7 @@ private:
     VulkanTexture floorTexture;
     VulkanTexture rasterTexture;
     VulkanTexture dummyCubeTexture;
+    VulkanTexture dummyWhiteTexture;
     VulkanBuffer zeroAttributeBuffer;
 
     Mesh skyMesh;
@@ -240,6 +256,7 @@ private:
     float fov;
     glm::vec3 mistColor;
     float grdTexSize = 440.0f;
+    float grdHeight = 0.0f;
     int viewPortWidth, viewPortHeight;
 
     bool povMode;

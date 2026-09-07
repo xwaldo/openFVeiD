@@ -26,12 +26,10 @@
 #include "section.h"
 #include "secstraight.h"
 #include "seccurved.h"
-#include "secnlcsv.h"
 #include "mnode.h"
 #include "core/application.h"
 #include "core/globalundohandler.h"
 #include "dummies.h"
-#include "nolimitsimporter.h"
 #include "portable-file-dialogs.h"
 #include "common.h"
 #include <iostream>
@@ -99,6 +97,16 @@ static std::string getStyleDisplayName(const std::string& fullPath) {
 void LeftPanel::syncAnchorNode(trackHandler* hTrack) {
     track* myTrack = hTrack->trackData;
     mnode* anchor = myTrack->anchorNode;
+
+    // Check if the track has a custom anchor (like a fork)
+    if (anchor->vPos != glm::dvec3(0.0, 0.0, 0.0)) {
+        // Keep the custom position, direction, and lateral vectors
+        // and only update energy/normals based on physical properties
+        anchor->updateNorm();
+        anchor->fEnergy = 0.5 * anchor->fVel * anchor->fVel + F_G * anchor->fPosHearty(0.9 * myTrack->fHeart);
+        return;
+    }
+
     anchor->vPos = glm::dvec3(0.0, 0.0, 0.0);
     double pitchRad = TO_RAD(myTrack->startPitch);
     anchor->vDir = glm::normalize(glm::dvec3(0.0, sin(pitchRad), -cos(pitchRad)));
@@ -120,53 +128,51 @@ LeftPanel::~LeftPanel() {}
 void LeftPanel::render(Application* app) {
     std::vector<trackHandler*>& trackList = app->trackList;
     int& activeTrackIdx = app->activeTrackIdx;
+    bool hasActiveTrack = activeTrackIdx >= 0 && activeTrackIdx < static_cast<int>(trackList.size());
 
-    if (ImGui::BeginTabBar("LeftTabs")) {
-        if (ImGui::BeginTabItem("Tracks", nullptr, (activeTab == 0) ? ImGuiTabItemFlags_SetSelected : 0)) {
-            renderProjectTab(app);
-            ImGui::EndTabItem();
-        }
-
-        bool hasActiveTrack = activeTrackIdx >= 0 && activeTrackIdx < static_cast<int>(trackList.size());
-
-        if (!hasActiveTrack)
-            ImGui::BeginDisabled();
-
-        if (ImGui::BeginTabItem("Sections", nullptr, (activeTab == 1) ? ImGuiTabItemFlags_SetSelected : 0)) {
-            if (hasActiveTrack)
-                renderTrackTab(trackList[activeTrackIdx], app);
-            ImGui::EndTabItem();
-        }
-
-        if (ImGui::BeginTabItem("Measurements", nullptr, (activeTab == 2) ? ImGuiTabItemFlags_SetSelected : 0)) {
-            if (hasActiveTrack)
-                renderMeasurements(trackList[activeTrackIdx], app);
-            ImGui::EndTabItem();
-        }
-
-        ImGui::BeginDisabled();
-        if (ImGui::BeginTabItem("Smoothing", nullptr, (activeTab == 3) ? ImGuiTabItemFlags_SetSelected : 0)) {
-            if (hasActiveTrack)
-                renderTrackSmoothing(trackList[activeTrackIdx], app);
-            ImGui::EndTabItem();
-        }
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("Smoothing not yet implemented");
-
-        if (ImGui::BeginTabItem("Colors", nullptr, (activeTab == 4) ? ImGuiTabItemFlags_SetSelected : 0)) {
-            if (hasActiveTrack)
-                renderColorsTab(trackList[activeTrackIdx], app);
-            ImGui::EndTabItem();
-        }
-
-        if (!hasActiveTrack)
-            ImGui::EndDisabled();
-
-        if (activeTab != -1)
-            activeTab = -1;
-        ImGui::EndTabBar();
+    // 1. Tracks Window
+    if (ImGui::Begin("Tracks", nullptr, 0)) {
+        renderProjectTab(app);
     }
+    ImGui::End();
+
+    // 2. Sections Window
+    if (ImGui::Begin("Sections", nullptr, 0)) {
+        if (!hasActiveTrack) {
+            ImGui::TextDisabled("Please select or create a track first.");
+        } else if (trackList[activeTrackIdx]->trackData->isReferenceTrack()) {
+            ImGui::TextDisabled("Reference Track (Editing Disabled)");
+        } else {
+            renderTrackTab(trackList[activeTrackIdx], app);
+        }
+    }
+    ImGui::End();
+
+    /*
+    // 3. Smoothing Window
+    if (ImGui::Begin("Smoothing", nullptr, 0)) {
+        if (!hasActiveTrack) {
+            ImGui::TextDisabled("Please select or create a track first.");
+        } else {
+            ImGui::BeginDisabled();
+            renderTrackSmoothing(trackList[activeTrackIdx], app);
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("Smoothing not yet implemented");
+        }
+    }
+    ImGui::End();
+    */
+
+    // 4. Colors Window
+    if (ImGui::Begin("Colors", nullptr, 0)) {
+        if (!hasActiveTrack) {
+            ImGui::TextDisabled("Please select or create a track first.");
+        } else {
+            renderColorsTab(trackList[activeTrackIdx], app);
+        }
+    }
+    ImGui::End();
 
     if (ImGui::GetCurrentContext()->ActiveIdPreviousFrame != 0 && ImGui::GetCurrentContext()->ActiveId == 0) {
         app->pushUndo();
@@ -184,6 +190,12 @@ void LeftPanel::renderProjectTab(Application* app) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             bool isSelected = (activeTrackIdx == i);
+            bool isHidden = (trackList[i]->trackData->drawHeartline == 3);
+
+            if (isHidden) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            }
+
             if (ImGui::Selectable((trackList[i]->trackData->name + "##" + std::to_string(i)).c_str(), isSelected, ImGuiSelectableFlags_SpanAllColumns)) {
                 activeTrackIdx = i;
                 selectedSectionIdx = -1;
@@ -191,6 +203,17 @@ void LeftPanel::renderProjectTab(Application* app) {
                     gViewport->markSceneDirty();
                     if (gloParent->mOptions->autoFocusOnSelection)
                         gViewport->focusOnSection(-1);
+                }
+            }
+
+            if (isHidden) {
+                ImGui::PopStyleColor();
+            }
+
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                trackList[i]->trackData->drawHeartline = isHidden ? 0 : 3;
+                if (gViewport) {
+                    gViewport->markSceneDirty();
                 }
             }
         }
@@ -218,7 +241,7 @@ void LeftPanel::renderProjectTab(Application* app) {
     }
     ImGui::SameLine();
     if (ImGui::Button("Edit"))
-        activeTab = 1;
+        ImGui::SetWindowFocus("Sections");
     if (!hasSelection)
         ImGui::EndDisabled();
 
@@ -237,6 +260,10 @@ void LeftPanel::renderProjectTab(Application* app) {
 
 void LeftPanel::renderTrackProperties(trackHandler* hTrack, Application* app) {
     track* myTrack = hTrack->trackData;
+    bool isRef = myTrack->isReferenceTrack();
+    if (isRef) {
+        ImGui::BeginDisabled();
+    }
 
     if (ImGui::TreeNodeEx("General", ImGuiTreeNodeFlags_DefaultOpen)) {
         BEGIN_PROP_TABLE("TrackPropsGeneral")
@@ -315,6 +342,10 @@ void LeftPanel::renderTrackProperties(trackHandler* hTrack, Application* app) {
             currentStyleLabel = getStyleDisplayName(myTrack->customStyleFile);
         }
 
+        if (isRef) {
+            ImGui::EndDisabled();
+        }
+
         PROP_ROW(
             "Style",
             if (ImGui::BeginCombo("##StyleDropdown", currentStyleLabel.c_str())) {
@@ -344,146 +375,88 @@ void LeftPanel::renderTrackProperties(trackHandler* hTrack, Application* app) {
                 ImGui::EndCombo();
             })
 
+        if (isRef) {
+            ImGui::BeginDisabled();
+        }
+
         END_PROP_TABLE()
         ImGui::TreePop();
     }
 
-    if (true) {
-        bool open = ImGui::TreeNodeEx("Parametric Style Editor", ImGuiTreeNodeFlags_DefaultOpen);
-        if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Select style files (.fvdstyle) placed in 'track_styles/'. Add new style files and their assets next to each other inside 'track_styles' to extend.");
-        }
-        if (open) {
-            if (ImGui::TreeNodeEx("Parametric Extrusions", ImGuiTreeNodeFlags_DefaultOpen)) {
-                if (ImGui::Button("Add Extrusion##AddExt")) {
-                    myTrack->customExtrusions.push_back({});
+    if (ImGui::TreeNodeEx("Limits: Force", ImGuiTreeNodeFlags_DefaultOpen)) {
+        BEGIN_PROP_TABLE("SafetyLimitsProps")
+
+        bool enableLimits = myTrack->enableForceLimits;
+        PROP_ROW(
+            "Enforce Limits",
+            if (ImGui::Checkbox("##EnforceLimits", &enableLimits)) {
+                myTrack->enableForceLimits = enableLimits;
+                myTrack->requestUpdateTrack(0, 0);
+            })
+
+        if (enableLimits) {
+            float maxPosNorm = (float)myTrack->fMaxPosNormal;
+            PROP_ROW(
+                "Norm: Max",
+                if (ImGui::DragFloat("##MaxPosNormal", &maxPosNorm, 0.05f, 0.1f, 20.0f, "%.2f g") || common::ValueScroll(&maxPosNorm, 0.5f, 0.1f)) {
+                    myTrack->fMaxPosNormal = std::clamp((double)maxPosNorm, 0.1, 20.0);
                     myTrack->requestUpdateTrack(0, 0);
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Clear All##ClearExt")) {
-                    myTrack->customExtrusions.clear();
+                })
+
+            float maxNegNorm = (float)myTrack->fMaxNegNormal;
+            PROP_ROW(
+                "Norm: Min",
+                if (ImGui::DragFloat("##MaxNegNormal", &maxNegNorm, 0.05f, -10.0f, -0.1f, "%.2f g") || common::ValueScroll(&maxNegNorm, 0.5f, 0.1f)) {
+                    myTrack->fMaxNegNormal = std::clamp((double)maxNegNorm, -10.0, -0.1);
                     myTrack->requestUpdateTrack(0, 0);
-                }
+                })
 
-                for (int i = 0; i < (int)myTrack->customExtrusions.size(); ++i) {
-                    ImGui::PushID(i);
-                    auto& ext = myTrack->customExtrusions[i];
-                    BEGIN_PROP_TABLE("ExtrusionTable")
+            float maxLat = (float)myTrack->fMaxLateral;
+            PROP_ROW(
+                "Lat: Max",
+                if (ImGui::DragFloat("##MaxLateral", &maxLat, 0.05f, 0.1f, 15.0f, "%.2f g") || common::ValueScroll(&maxLat, 0.5f, 0.1f)) {
+                    myTrack->fMaxLateral = std::clamp((double)maxLat, 0.1, 15.0);
+                    myTrack->requestUpdateTrack(0, 0);
+                })
 
-                    int shapeIdx = (int)ext.shape;
-                    const char* shapes[] = {"Cylindrical", "Box"};
-                    PROP_ROW(
-                        "Shape",
-                        if (ImGui::Combo("##Shape", &shapeIdx, shapes, 2)) { ext.shape = (track::ExtrusionShape)shapeIdx; myTrack->requestUpdateTrack(0, 0); } if (ImGui::IsItemHovered()) ImGui::SetTooltip("The geometric cross-section of the extrusion.");)
-
-                    PROP_ROW("Size (L1/L2)",
-                             if (ImGui::DragFloat2("##Size", &ext.size.x, 0.005f, 0.01f, 5.0f)) myTrack->requestUpdateTrack(0, 0);
-                             if (ImGui::IsItemHovered()) ImGui::SetTooltip("The dimensions of the extrusion cross-section.");)
-                    PROP_ROW("Offset (X/Y)",
-                             if (ImGui::DragFloat2("##Offset", &ext.offset.x, 0.005f, -10.0f, 10.0f)) myTrack->requestUpdateTrack(0, 0);
-                             if (ImGui::IsItemHovered()) ImGui::SetTooltip("The lateral (X) and vertical (Y) displacement. Note: Offset is relative to the centre of the rails. The entire track assembly automatically inverts if heartline is negative.");)
-
-                    END_PROP_TABLE()
-                    if (ImGui::Button("Remove Extrusion")) {
-                        myTrack->customExtrusions.erase(myTrack->customExtrusions.begin() + i);
-                        myTrack->requestUpdateTrack(0, 0);
-                        i--;
-                    }
-                    ImGui::Separator();
-                    ImGui::PopID();
-                }
-                ImGui::TreePop();
-            }
-
-            if (ImGui::TreeNodeEx("Custom Assets", ImGuiTreeNodeFlags_DefaultOpen)) {
-                if (ImGui::Button("Add Asset##AddAsset")) {
-                    myTrack->customAssets.push_back({});
-                }
-
-                for (int i = 0; i < (int)myTrack->customAssets.size(); ++i) {
-                    ImGui::PushID(i);
-                    auto& asset = myTrack->customAssets[i];
-                    BEGIN_PROP_TABLE("AssetTable")
-
-                    PROP_ROW(
-                        "Shade Smooth",
-                        if (ImGui::Checkbox("##ShadeSmooth", &asset.smoothAlongSpline)) {
-                            myTrack->requestUpdateTrack(0, 0);
-                            myTrack->processPendingUpdates();
-                        } if (ImGui::IsItemHovered()) {
-                            ImGui::SetTooltip("When enabled, shading follows the track's spline smoothly.");
-                        })
-
-                    PROP_ROW(
-                        "File",
-                        if (ImGui::Button(asset.filepath.empty() ? "Browse..." : asset.filepath.c_str())) {
-                            auto selection = pfd::open_file("Select Asset", ".", {"glTF Files", "*.gltf *.glb"}).result();
-                            if (!selection.empty()) {
-                                asset.filepath = selection[0];
-                                if (asset.loadedModel) {
-                                    delete asset.loadedModel;
-                                    asset.loadedModel = nullptr;
-                                }
-                                myTrack->requestUpdateTrack(0, 0);
-                            }
-                        })
-
-                    float totalLength = myTrack->getNumPoints() > 0 ? myTrack->getPoint(myTrack->getNumPoints())->fTotalLength : 1000.0f;
-                    float uiEndDist = asset.endDist < 0.0f ? totalLength : asset.endDist;
-
-                    PROP_ROW(
-                        "Full Layout",
-                        if (ImGui::Checkbox("##FullLayout", &asset.fullLayout)) {
-                            if (asset.fullLayout) {
-                                asset.startDist = 0.0f;
-                                asset.endDist = -1.0f;
-                                asset.toEnd = true;
-                            } else {
-                                asset.endDist = totalLength;
-                            }
-                            myTrack->requestUpdateTrack(0, 0);
-                        })
-
-                    if (!asset.fullLayout) {
-                        PROP_ROW(
-                            "To End",
-                            if (ImGui::Checkbox("##ToEnd", &asset.toEnd)) {
-                                asset.endDist = asset.toEnd ? -1.0f : totalLength;
-                                myTrack->requestUpdateTrack(0, 0);
-                            })
-
-                        PROP_ROW("Start Dist", if (ImGui::DragFloat("##Start", &asset.startDist, 0.1f, 0.0f, totalLength)) myTrack->requestUpdateTrack(0, 0);)
-                        if (!asset.toEnd) {
-                            PROP_ROW(
-                                "End Dist",
-                                if (ImGui::DragFloat("##End", &uiEndDist, 0.1f, asset.startDist, totalLength)) {
-                                    asset.endDist = uiEndDist;
-                                    myTrack->requestUpdateTrack(0, 0);
-                                })
-                        }
-                    }
-
-                    PROP_ROW("Interval", if (ImGui::DragFloat("##Interval", &asset.interval, 0.1f, 0.01f, 100.0f)) myTrack->requestUpdateTrack(0, 0);)
-                    PROP_ROW("Color", if (ImGui::ColorEdit3("##Color", &asset.color.x)) myTrack->requestUpdateTrack(0, 0);)
-                    PROP_ROW("Visible", if (ImGui::Checkbox("##Visible", &asset.visible)) myTrack->requestUpdateTrack(0, 0);)
-
-                    END_PROP_TABLE()
-                    if (ImGui::Button("Remove Asset")) {
-                        if (asset.loadedModel) {
-                            delete asset.loadedModel;
-                            asset.loadedModel = nullptr;
-                        }
-                        myTrack->customAssets.erase(myTrack->customAssets.begin() + i);
-                        myTrack->requestUpdateTrack(0, 0);
-                        i--;
-                    }
-                    ImGui::Separator();
-                    ImGui::PopID();
-                }
-                ImGui::TreePop();
-            }
-            ImGui::TreePop();
+            float minLat = (float)myTrack->fMinLateral;
+            PROP_ROW(
+                "Lat: Min",
+                if (ImGui::DragFloat("##MinLateral", &minLat, 0.05f, -15.0f, -0.1f, "%.2f g") || common::ValueScroll(&minLat, 0.5f, 0.1f)) {
+                    myTrack->fMinLateral = std::clamp((double)minLat, -15.0, -0.1);
+                    myTrack->requestUpdateTrack(0, 0);
+                })
         }
+        END_PROP_TABLE()
+        ImGui::TreePop();
+    }
+
+    if (ImGui::TreeNodeEx("Limits: Radius", ImGuiTreeNodeFlags_DefaultOpen)) {
+        BEGIN_PROP_TABLE("RadiusLimitsProps")
+
+        bool enforceRad = myTrack->enforceMinRadius;
+        PROP_ROW(
+            "Min Radius Limit",
+            if (ImGui::Checkbox("##EnforceRad", &enforceRad)) {
+                myTrack->enforceMinRadius = enforceRad;
+                myTrack->requestUpdateTrack(0, 0);
+            })
+
+        if (enforceRad) {
+            float minRad = (float)myTrack->minRadius;
+            PROP_ROW(
+                "Radius: Min",
+                if (ImGui::DragFloat("##MinRadius", &minRad, 0.1f, 0.1f, 500.0f, "%.1f m") || common::ValueScroll(&minRad, 1.0f, 0.1f)) {
+                    myTrack->minRadius = std::max(0.1, (double)minRad);
+                    myTrack->requestUpdateTrack(0, 0);
+                })
+        }
+        END_PROP_TABLE()
+        ImGui::TreePop();
+    }
+
+    if (isRef) {
+        ImGui::EndDisabled();
     }
 }
 
@@ -521,7 +494,8 @@ void LeftPanel::renderTrackTab(trackHandler* hTrack, Application* app) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             bool isSelected = (selectedSectionIdx == i);
-            if (ImGui::Selectable((myTrack->lSections[i]->sName + "##" + std::to_string(i)).c_str(), isSelected, ImGuiSelectableFlags_SpanAllColumns)) {
+            std::string displayName = std::to_string(i) + ". " + myTrack->lSections[i]->sName;
+            if (ImGui::Selectable((displayName + "##" + std::to_string(i)).c_str(), isSelected, ImGuiSelectableFlags_SpanAllColumns)) {
                 selectedSectionIdx = i;
                 myTrack->activeSection = myTrack->lSections[i];
                 gloParent->selectedFunc = nullptr;
@@ -547,11 +521,8 @@ void LeftPanel::renderTrackTab(trackHandler* hTrack, Application* app) {
             case geometricriderlocal:
                 typeStr = "Geometric Rider-Local";
                 break;
-            case bezier:
-                typeStr = "Bezier";
-                break;
-            case nolimitscsv:
-                typeStr = "NL2 CSV";
+            case static_spline:
+                typeStr = "Static Spline";
                 break;
             default:
                 break;
@@ -567,7 +538,9 @@ void LeftPanel::renderTrackTab(trackHandler* hTrack, Application* app) {
     bool styleIsLocked = false;
     if (styleIsLocked)
         ImGui::BeginDisabled();
-    if (ImGui::Button("Add Section"))
+
+    // 1. "Add" Button
+    if (ImGui::Button("Add"))
         ImGui::OpenPopup("AddSectionPopup");
     if (ImGui::BeginPopup("AddSectionPopup")) {
         bool added = false;
@@ -592,13 +565,46 @@ void LeftPanel::renderTrackTab(trackHandler* hTrack, Application* app) {
             myTrack->newSection(geometricriderlocal, insertIdx);
             added = true;
         }
-        if (ImGui::MenuItem("Bezier")) {
-            myTrack->newSection(bezier, insertIdx);
-            added = true;
-        }
-        if (ImGui::MenuItem("NoLimits 2 CSV")) {
-            myTrack->newSection(nolimitscsv, insertIdx);
-            added = true;
+
+        if (ImGui::BeginMenu("Templates")) {
+            static std::vector<std::pair<std::string, std::string>> cachedTemplates;
+            static double lastScanTime = -10.0;
+            double currentTime = ImGui::GetTime();
+            if (cachedTemplates.empty() || currentTime - lastScanTime > 2.0) {
+                cachedTemplates.clear();
+                try {
+                    if (std::filesystem::exists("templates")) {
+                        for (const auto& entry : std::filesystem::recursive_directory_iterator("templates")) {
+                            if (entry.is_regular_file() && entry.path().extension() == ".fvdtpl") {
+                                cachedTemplates.push_back({entry.path().stem().string(), entry.path().string()});
+                            }
+                        }
+                    }
+                } catch (...) {
+                }
+                std::sort(cachedTemplates.begin(), cachedTemplates.end());
+                lastScanTime = currentTime;
+            }
+
+            if (cachedTemplates.empty()) {
+                ImGui::TextDisabled("No templates found");
+            } else {
+                for (const auto& tpl : cachedTemplates) {
+                    if (ImGui::MenuItem(tpl.first.c_str())) {
+                        if (myTrack->loadTemplate(tpl.second, insertIdx)) {
+                            if (insertIdx == -1)
+                                selectedSectionIdx = static_cast<int>(myTrack->lSections.size()) - 1;
+                            else
+                                selectedSectionIdx = insertIdx;
+                            myTrack->activeSection = myTrack->lSections[selectedSectionIdx];
+                            gloParent->selectedFunc = nullptr;
+                            app->pushUndo();
+                            added = true;
+                        }
+                    }
+                }
+            }
+            ImGui::EndMenu();
         }
         if (added) {
             if (insertIdx == -1)
@@ -614,8 +620,35 @@ void LeftPanel::renderTrackTab(trackHandler* hTrack, Application* app) {
         }
         ImGui::EndPopup();
     }
+
     ImGui::SameLine();
-    if (ImGui::Button("Prepend Section"))
+
+    // 2. "Delete" Button
+    bool canDelete = (selectedSectionIdx >= 0) && !styleIsLocked;
+    if (!canDelete)
+        ImGui::BeginDisabled();
+    if (ImGui::Button("Delete")) {
+        myTrack->removeSection(selectedSectionIdx);
+        selectedSectionIdx--;
+        if (selectedSectionIdx < -1)
+            selectedSectionIdx = -1;
+        if (selectedSectionIdx >= 0)
+            myTrack->activeSection = myTrack->lSections.at(selectedSectionIdx);
+        else
+            myTrack->activeSection = nullptr;
+        myTrack->requestUpdateTrack(0, 0);
+        gloParent->selectedFunc = nullptr;
+        if (gViewport && gloParent->mOptions->autoFocusOnSelection)
+            gViewport->focusOnSection(selectedSectionIdx);
+        app->pushUndo();
+    }
+    if (!canDelete)
+        ImGui::EndDisabled();
+
+    ImGui::SameLine();
+
+    // 3. "Prepend" Button
+    if (ImGui::Button("Prepend"))
         ImGui::OpenPopup("PrependSectionPopup");
     if (ImGui::BeginPopup("PrependSectionPopup")) {
         bool added = false;
@@ -640,13 +673,46 @@ void LeftPanel::renderTrackTab(trackHandler* hTrack, Application* app) {
             myTrack->newSection(geometricriderlocal, insertIdx);
             added = true;
         }
-        if (ImGui::MenuItem("Bezier")) {
-            myTrack->newSection(bezier, insertIdx);
-            added = true;
-        }
-        if (ImGui::MenuItem("NoLimits 2 CSV")) {
-            myTrack->newSection(nolimitscsv, insertIdx);
-            added = true;
+
+        if (ImGui::BeginMenu("Templates")) {
+            static std::vector<std::pair<std::string, std::string>> cachedTemplates;
+            static double lastScanTime = -10.0;
+            double currentTime = ImGui::GetTime();
+            if (cachedTemplates.empty() || currentTime - lastScanTime > 2.0) {
+                cachedTemplates.clear();
+                try {
+                    if (std::filesystem::exists("templates")) {
+                        for (const auto& entry : std::filesystem::recursive_directory_iterator("templates")) {
+                            if (entry.is_regular_file() && entry.path().extension() == ".fvdtpl") {
+                                cachedTemplates.push_back({entry.path().stem().string(), entry.path().string()});
+                            }
+                        }
+                    }
+                } catch (...) {
+                }
+                std::sort(cachedTemplates.begin(), cachedTemplates.end());
+                lastScanTime = currentTime;
+            }
+
+            if (cachedTemplates.empty()) {
+                ImGui::TextDisabled("No templates found");
+            } else {
+                for (const auto& tpl : cachedTemplates) {
+                    if (ImGui::MenuItem(tpl.first.c_str())) {
+                        if (myTrack->loadTemplate(tpl.second, insertIdx)) {
+                            if (insertIdx == -1)
+                                selectedSectionIdx = static_cast<int>(myTrack->lSections.size()) - 1;
+                            else
+                                selectedSectionIdx = insertIdx;
+                            myTrack->activeSection = myTrack->lSections[selectedSectionIdx];
+                            gloParent->selectedFunc = nullptr;
+                            app->pushUndo();
+                            added = true;
+                        }
+                    }
+                }
+            }
+            ImGui::EndMenu();
         }
         if (added) {
             selectedSectionIdx = insertIdx;
@@ -659,27 +725,7 @@ void LeftPanel::renderTrackTab(trackHandler* hTrack, Application* app) {
         }
         ImGui::EndPopup();
     }
-    ImGui::SameLine();
-    bool canDelete = (selectedSectionIdx >= 0) && !styleIsLocked;
-    if (!canDelete)
-        ImGui::BeginDisabled();
-    if (ImGui::Button("Delete Section")) {
-        myTrack->removeSection(selectedSectionIdx);
-        selectedSectionIdx--;
-        if (selectedSectionIdx < -1)
-            selectedSectionIdx = -1;
-        if (selectedSectionIdx >= 0)
-            myTrack->activeSection = myTrack->lSections.at(selectedSectionIdx);
-        else
-            myTrack->activeSection = nullptr;
-        myTrack->requestUpdateTrack(0, 0);
-        gloParent->selectedFunc = nullptr;
-        if (gViewport && gloParent->mOptions->autoFocusOnSelection)
-            gViewport->focusOnSection(selectedSectionIdx);
-        app->pushUndo();
-    }
-    if (!canDelete)
-        ImGui::EndDisabled();
+
     if (styleIsLocked)
         ImGui::EndDisabled();
 
@@ -701,13 +747,6 @@ void LeftPanel::renderTrackTab(trackHandler* hTrack, Application* app) {
 void LeftPanel::renderSectionProperties(trackHandler* hTrack, section* sec, Application* app) {
     ImGui::BeginChild("SectionPropsScroll");
     if (sec) {
-        if (sec->isRestricted) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
-            ImGui::TextWrapped("Warning: Section exceeds minimum radius limit!");
-            ImGui::PopStyleColor();
-            ImGui::Separator();
-        }
-
         BEGIN_PROP_TABLE("SectionBaseProps")
         char nameBuf[256];
         strncpy(nameBuf, sec->sName.c_str(), sizeof(nameBuf) - 1);
@@ -720,7 +759,7 @@ void LeftPanel::renderSectionProperties(trackHandler* hTrack, section* sec, Appl
             PROP_ROW("Length", ImGui::Text("%.2f %s", sec->length * gloParent->mOptions->getLengthFactor(), gloParent->mOptions->getLengthString().c_str());)
             int orientation = sec->bOrientation ? 1 : 0;
             const char* orientations[] = {"Quaternion", "Euler"};
-            bool disableOrientation = (sec->type == straight || sec->type == bezier || sec->type == nolimitscsv || sec->type == geometricriderlocal);
+            bool disableOrientation = (sec->type == straight || sec->type == geometricriderlocal || sec->type == static_spline);
             if (disableOrientation) {
                 sec->bOrientation = false;
                 orientation = 0;
@@ -732,7 +771,7 @@ void LeftPanel::renderSectionProperties(trackHandler* hTrack, section* sec, Appl
                 ImGui::EndDisabled();
             int argument = sec->bArgument ? 1 : 0;
             const char* arguments[] = {"Time", "Distance"};
-            bool disableArgument = (sec->type == straight || sec->type == curved || sec->type == bezier || sec->type == nolimitscsv);
+            bool disableArgument = (sec->type == straight || sec->type == curved || sec->type == static_spline);
             if (disableArgument) {
                 sec->bArgument = 0;
                 argument = 0;
@@ -761,9 +800,8 @@ void LeftPanel::renderSectionProperties(trackHandler* hTrack, section* sec, Appl
         case geometricriderlocal:
             renderForcedProperties(hTrack, sec, app);
             break;
-        case bezier:
-        case nolimitscsv:
-            renderBezierProperties(hTrack, sec, app);
+        case static_spline:
+            renderStaticProperties(hTrack, sec, app);
             break;
         default:
             break;
@@ -773,6 +811,93 @@ void LeftPanel::renderSectionProperties(trackHandler* hTrack, section* sec, Appl
         ImGui::Separator();
         renderAnchorProperties(hTrack, nullptr, app);
     }
+
+    if (sec && sec->type != anchor) {
+        ImGui::Separator();
+        static bool initTemplateIndices = true;
+        if (ImGui::Button("Save Section as Template...")) {
+            ImGui::OpenPopup("SaveTemplatePopup");
+            initTemplateIndices = true;
+        }
+
+        if (ImGui::BeginPopupModal("SaveTemplatePopup", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+            static char templateName[128] = "";
+            static int startNode = 0;
+            static int endNode = 0;
+
+            track* myTrack = hTrack->trackData;
+            int totalNodes = myTrack->getNumPoints();
+
+            auto getSectionStartNode = [](track* t, int secIdx) {
+                if (!t || secIdx < 0 || secIdx >= (int)t->lSections.size())
+                    return 0;
+                int currentPoints = 0;
+                for (int i = 0; i < secIdx; ++i) {
+                    currentPoints += (int)t->lSections[i]->lNodes.size() - 1;
+                }
+                return currentPoints;
+            };
+
+            auto getSectionEndNode = [](track* t, int secIdx) {
+                if (!t || secIdx < 0 || secIdx >= (int)t->lSections.size())
+                    return 0;
+                int currentPoints = 0;
+                for (int i = 0; i < secIdx; ++i) {
+                    currentPoints += (int)t->lSections[i]->lNodes.size() - 1;
+                }
+                currentPoints += (int)t->lSections[secIdx]->lNodes.size() - 1;
+                return currentPoints;
+            };
+
+            int selectedSectionIdx = myTrack->getSectionNumber(sec);
+
+            if (initTemplateIndices) {
+                extern Viewport* gViewport;
+                int playheadPos = (gViewport) ? gViewport->getPOVPos() : getSectionStartNode(myTrack, selectedSectionIdx);
+                startNode = std::clamp(playheadPos, 0, std::max(0, totalNodes - 1));
+                int defaultEndNode = getSectionEndNode(myTrack, selectedSectionIdx);
+                endNode = std::clamp(defaultEndNode, startNode, std::max(0, totalNodes - 1));
+                templateName[0] = '\0';
+                initTemplateIndices = false;
+            }
+
+            ImGui::Text("Save Precise Node Range as Template");
+            ImGui::Separator();
+
+            ImGui::InputText("Template Name", templateName, IM_ARRAYSIZE(templateName));
+
+            ImGui::SeparatorText("Select Precise Node Index Range");
+            ImGui::InputInt("Start Node", &startNode);
+            ImGui::InputInt("End Node", &endNode);
+
+            // Clamp inputs safely to valid track node ranges
+            startNode = std::clamp(startNode, 0, std::max(0, totalNodes - 1));
+            endNode = std::clamp(endNode, startNode, std::max(0, totalNodes - 1));
+
+            ImGui::SeparatorText("Template Geometry");
+            ImGui::Text("Nodes included: %d to %d (%d nodes)", startNode, endNode, endNode - startNode + 1);
+            ImGui::TextDisabled("Note: Selected nodes will be baked relative to the start node.");
+
+            ImGui::Separator();
+
+            if (ImGui::Button("Save", ImVec2(120, 0))) {
+                if (strlen(templateName) > 0) {
+                    std::string filepath = "templates/" + std::string(templateName) + ".fvdtpl";
+                    if (myTrack->saveTemplate(filepath, startNode, endNode)) {
+                        initTemplateIndices = true;
+                        ImGui::CloseCurrentPopup();
+                    }
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+                initTemplateIndices = true;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+    }
+
     ImGui::EndChild();
 }
 
@@ -852,7 +977,7 @@ void LeftPanel::renderStraightProperties(trackHandler* hTrack, section* sec, App
         speedMode = speedModeRaw;
     }
     PROP_ROW(
-        "Velocity Mode",
+        "Motion Profile",
         ImGui::SetNextItemWidth(-FLT_MIN);
         if (ImGui::Combo("##StraightSpeedMode", &speedMode, "Coasting\0Constant Velocity\0Constant Acceleration\0")) {
             if (speedMode == 0) {
@@ -883,9 +1008,9 @@ void LeftPanel::renderStraightProperties(trackHandler* hTrack, section* sec, App
         } else if (speedMode == 2) {
             float displayAccel = (float)(s->fAccel / F_G);
             PROP_ROW(
-                "Acceleration",
+                "Longitudinal Accel",
                 ImGui::SetNextItemWidth(-FLT_MIN);
-                if (ImGui::DragFloat("##StraightAccel", &displayAccel, 0.01f, -10.0f, 10.0f, "%.2f G") || common::ValueScroll(&displayAccel, 0.1f, 0.01f)) {
+                if (ImGui::DragFloat("##StraightAccel", &displayAccel, 0.01f, -10.0f, 10.0f, "%.2f g") || common::ValueScroll(&displayAccel, 0.1f, 0.01f)) {
                     s->fAccel = (double)std::clamp(displayAccel, -10.0f, 10.0f) * F_G;
                     changed = true;
                 })
@@ -912,7 +1037,7 @@ void LeftPanel::renderCurvedProperties(trackHandler* hTrack, section* sec, Appli
         speedMode = speedModeRaw;
     }
     PROP_ROW(
-        "Velocity Mode",
+        "Motion Profile",
         ImGui::SetNextItemWidth(-FLT_MIN);
         if (ImGui::Combo("##CurvedSpeedMode", &speedMode, "Coasting\0Constant Velocity\0Constant Acceleration\0")) {
             if (speedMode == 0) {
@@ -943,9 +1068,9 @@ void LeftPanel::renderCurvedProperties(trackHandler* hTrack, section* sec, Appli
         } else if (speedMode == 2) {
             float displayAccel = (float)(c->fAccel / F_G);
             PROP_ROW(
-                "Acceleration",
+                "Longitudinal Accel",
                 ImGui::SetNextItemWidth(-FLT_MIN);
-                if (ImGui::DragFloat("##CurvedAccel", &displayAccel, 0.01f, -10.0f, 10.0f, "%.2f G") || common::ValueScroll(&displayAccel, 0.1f, 0.01f)) {
+                if (ImGui::DragFloat("##CurvedAccel", &displayAccel, 0.01f, -10.0f, 10.0f, "%.2f g") || common::ValueScroll(&displayAccel, 0.1f, 0.01f)) {
                     c->fAccel = (double)std::clamp(displayAccel, -10.0f, 10.0f) * F_G;
                     changed = true;
                 })
@@ -969,66 +1094,6 @@ void LeftPanel::renderCurvedProperties(trackHandler* hTrack, section* sec, Appli
         hTrack->trackData->requestUpdateTrack(sec, 0);
 }
 
-void LeftPanel::renderBezierProperties(trackHandler* hTrack, section* sec, Application* app) {
-    if (sec->type == bezier) {
-        ImGui::Text("Bezier Spline Data");
-        ImGui::TextDisabled("Bezier sections are defined by external spline geometry.");
-    } else {
-        ImGui::Text("NoLimits 2 CSV Data");
-        ImGui::TextDisabled("NL2 CSV sections accurately interpolate exact orientations.");
-    }
-    ImGui::Separator();
-    ImGui::BeginDisabled();
-    ImGui::Button("Import NL1 Track (.nltrack) [Deprecated]", ImVec2(-FLT_MIN, 0));
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("NL1 Track imports are deprecated. Please use NL2 CSV instead.");
-    ImGui::EndDisabled();
-    if (ImGui::Button("Import NoLimits 2 CSV (.csv)...", ImVec2(-FLT_MIN, 0))) {
-        auto f = pfd::open_file("Import NoLimits 2 CSV", ".", {"NoLimits 2 CSV Files", "*.csv *.txt", "All Files", "*"}).result();
-        if (!f.empty()) {
-            if (sec->type == bezier) {
-                noLimitsImporter importer(hTrack, f[0]);
-                if (importer.importAsCsv()) {
-                    sec->sName = "NL2 CSV Import";
-                    hTrack->trackData->requestUpdateTrack(sec, 0);
-                }
-            } else if (sec->type == nolimitscsv) {
-                secnlcsv* nlSec = dynamic_cast<secnlcsv*>(sec);
-                if (nlSec) {
-                    nlSec->loadTrack(f[0]);
-                    nlSec->sName = "NL2 CSV Import";
-                }
-            }
-        }
-    }
-    if (sec->type == bezier && !sec->bezList.empty()) {
-        ImGui::Text("Imported Nodes: %zu", sec->bezList.size());
-        ImGui::Separator();
-        BEGIN_PROP_TABLE("BezierProps")
-        secbezier* bezSec = dynamic_cast<secbezier*>(sec);
-        if (bezSec) {
-            float smoothing = bezSec->fSmoothing;
-            PROP_ROW(
-                "Smoothing", if (ImGui::SliderFloat("##Smoothing", &smoothing, 0.0f, 1.0f, "%.2f")) { bezSec->fSmoothing = smoothing; hTrack->trackData->requestUpdateTrack(sec, 0); } if (ImGui::IsItemHovered()) ImGui::SetTooltip("0.0 = Strict Bezier\n1.0 = Max relaxation");)
-        }
-        END_PROP_TABLE()
-    } else if (sec->type == nolimitscsv) {
-        secnlcsv* nlSec = dynamic_cast<secnlcsv*>(sec);
-        if (nlSec) {
-            ImGui::Separator();
-            BEGIN_PROP_TABLE("CSVProps")
-            int skip = nlSec->skipPoints, interp = nlSec->interpolation;
-            PROP_ROW(
-                "Skip Points", if (ImGui::DragInt("##SkipPoints", &skip, 0.1f, 0, 100) || common::ValueScrollInt(&skip, 1, 1)) { skip = std::clamp(skip, 0, 100); if (skip != nlSec->skipPoints) { nlSec->skipPoints = skip; nlSec->applyFiltering(); hTrack->trackData->requestUpdateTrack(nlSec, 0); } })
-            const char* interpOptions[] = {"Linear", "Cubic Spline"};
-            PROP_ROW(
-                "Interpolation", if (ImGui::Combo("##Interpolation", &interp, interpOptions, IM_ARRAYSIZE(interpOptions))) { if (interp != nlSec->interpolation) { nlSec->interpolation = interp; hTrack->trackData->requestUpdateTrack(nlSec, 0); } })
-            END_PROP_TABLE()
-            ImGui::Text("Imported Nodes: %zu", nlSec->lNodes.size());
-        }
-    }
-}
-
 void LeftPanel::renderForcedProperties(trackHandler* hTrack, section* sec, Application* app) {
     bool changed = false;
     BEGIN_PROP_TABLE("ForcedProps")
@@ -1040,7 +1105,7 @@ void LeftPanel::renderForcedProperties(trackHandler* hTrack, section* sec, Appli
         speedMode = speedModeRaw;
     }
     PROP_ROW(
-        "Velocity Mode",
+        "Motion Profile",
         ImGui::SetNextItemWidth(-FLT_MIN);
         if (ImGui::Combo("##ForcedSpeedMode", &speedMode, "Coasting\0Constant Velocity\0Constant Acceleration\0")) {
             if (speedMode == 0) {
@@ -1070,14 +1135,85 @@ void LeftPanel::renderForcedProperties(trackHandler* hTrack, section* sec, Appli
         } else if (speedMode == 2) {
             float displayAccel = (float)(sec->fAccel / F_G);
             PROP_ROW(
-                "Acceleration",
+                "Longitudinal Accel",
                 ImGui::SetNextItemWidth(-FLT_MIN);
-                if (ImGui::DragFloat("##ForcedAccel", &displayAccel, 0.01f, -10.0f, 10.0f, "%.2f G") || common::ValueScroll(&displayAccel, 0.1f, 0.01f)) {
+                if (ImGui::DragFloat("##ForcedAccel", &displayAccel, 0.01f, -10.0f, 10.0f, "%.2f g") || common::ValueScroll(&displayAccel, 0.1f, 0.01f)) {
                     sec->fAccel = (double)std::clamp(displayAccel, -10.0f, 10.0f) * F_G;
                     changed = true;
                 })
         }
     }
+    END_PROP_TABLE()
+    if (changed)
+        hTrack->trackData->requestUpdateTrack(sec, 0);
+}
+
+void LeftPanel::renderStaticProperties(trackHandler* hTrack, section* sec, Application* app) {
+    bool changed = false;
+    BEGIN_PROP_TABLE("StaticProps")
+
+    int speedModeRaw = 0;
+    if (sec->bSpeed) {
+        speedModeRaw = 1;
+    } else if (sec->fAccel != 0.0) {
+        speedModeRaw = 3;
+    } else if (sec->fVel > 0.0) {
+        speedModeRaw = 2;
+    }
+
+    static int speedMode = 0;
+    static section* lastSec = nullptr;
+    if (sec != lastSec || !ImGui::IsAnyItemActive()) {
+        lastSec = sec;
+        speedMode = speedModeRaw;
+    }
+
+    PROP_ROW(
+        "Motion Profile",
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::Combo("##StaticSpeedMode", &speedMode, "Inherit Speed\0Coasting\0Constant Velocity\0Constant Acceleration\0")) {
+            if (speedMode == 0) {
+                sec->bSpeed = false;
+                sec->fAccel = 0.0;
+                sec->fVel = 0.0;
+            } else if (speedMode == 1) {
+                sec->bSpeed = true;
+                sec->fAccel = 0.0;
+            } else if (speedMode == 2) {
+                sec->bSpeed = false;
+                sec->fAccel = 0.0;
+                if (sec->fVel == 0.0)
+                    sec->fVel = 10.0;
+            } else {
+                sec->bSpeed = false;
+                if (sec->fAccel == 0.0)
+                    sec->fAccel = F_G;
+            }
+            changed = true;
+            app->pushUndo();
+        })
+
+    if (speedMode == 2) {
+        float displaySpeed = (float)sec->fVel * gloParent->mOptions->getSpeedFactor();
+        std::string spdFmt = "%.3f " + gloParent->mOptions->getSpeedString();
+        PROP_ROW(
+            "Speed",
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::DragFloat("##StaticSpeed", &displaySpeed, 0.1f, 0.1f, 500.0f * gloParent->mOptions->getSpeedFactor(), spdFmt.c_str()) || common::ValueScroll(&displaySpeed, 1.0f, 0.1f)) {
+                sec->fVel = (double)std::max(0.1f * (float)gloParent->mOptions->getSpeedFactor(), displaySpeed) / gloParent->mOptions->getSpeedFactor();
+                changed = true;
+            })
+    } else if (speedMode == 3) {
+        float displayAccel = (float)(sec->fAccel / F_G);
+        PROP_ROW(
+            "Longitudinal Accel",
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::DragFloat("##StaticAccel", &displayAccel, 0.01f, -10.0f, 10.0f, "%.2f g") || common::ValueScroll(&displayAccel, 0.1f, 0.01f)) {
+                sec->fAccel = (double)std::clamp(displayAccel, -10.0f, 10.0f) * F_G;
+                changed = true;
+            })
+    }
+
     END_PROP_TABLE()
     if (changed)
         hTrack->trackData->requestUpdateTrack(sec, 0);
@@ -1091,6 +1227,7 @@ void LeftPanel::renderColorsTab(trackHandler* hTrack, Application* app) {
         PROP_ROW("Default", ImGui::ColorEdit3("##TrkCol0", &hTrack->trackColors[0].x);)
         PROP_ROW("Section", ImGui::ColorEdit3("##TrkCol1", &hTrack->trackColors[1].x);)
         PROP_ROW("Transition", ImGui::ColorEdit3("##TrkCol2", &hTrack->trackColors[2].x);)
+        PROP_ROW("Heartline", ImGui::ColorEdit3("##TrkCol3", &hTrack->trackColors[3].x);)
         END_PROP_TABLE()
         ImGui::TreePop();
     }
@@ -1102,7 +1239,7 @@ void LeftPanel::renderColorsTab(trackHandler* hTrack, Application* app) {
         ImGui::TableNextColumn();
         ImGui::TextDisabled("Editable");
         ImGui::TableNextColumn();
-        graphColRow("Roll Speed", (int)GraphType::EditRoll);
+        graphColRow("Roll Rate", (int)GraphType::EditRoll);
         graphColRow("Normal Force", (int)GraphType::EditNormal);
         graphColRow("Lateral Force", (int)GraphType::EditLateral);
         ImGui::TableNextRow();
@@ -1110,7 +1247,8 @@ void LeftPanel::renderColorsTab(trackHandler* hTrack, Application* app) {
         ImGui::TextDisabled("Resulting");
         ImGui::TableNextColumn();
         graphColRow("Banking", (int)GraphType::Banking);
-        graphColRow("Roll Speed", (int)GraphType::RollSpeed);
+        graphColRow("Roll Rate", (int)GraphType::RollRate);
+        graphColRow("Rider Roll Rate", (int)GraphType::RiderRollRate);
         graphColRow("Roll Accel", (int)GraphType::RollAccel);
         graphColRow("Normal Force", (int)GraphType::NForce);
         graphColRow("N-Force Change", (int)GraphType::NForceChange);
@@ -1118,25 +1256,31 @@ void LeftPanel::renderColorsTab(trackHandler* hTrack, Application* app) {
         graphColRow("L-Force Change", (int)GraphType::LForceChange);
         graphColRow("Rider Pitch Change", (int)GraphType::PitchChange);
         graphColRow("Rider Yaw Change", (int)GraphType::YawChange);
+        graphColRow("World Pitch", (int)GraphType::WorldPitch);
         graphColRow("World Pitch Change", (int)GraphType::WorldPitchChange);
         graphColRow("World Yaw Change", (int)GraphType::WorldYawChange);
+        graphColRow("Velocity", (int)GraphType::Velocity);
+        graphColRow("Longitudinal Accel", (int)GraphType::LongitudinalAccel);
         END_PROP_TABLE()
         ImGui::TreePop();
     }
 }
 
 void LeftPanel::renderEnvironmentTab() {
-    if (ImGui::TreeNodeEx("Ground", 0)) {
+    if (ImGui::TreeNodeEx("Ground", ImGuiTreeNodeFlags_DefaultOpen)) {
         BEGIN_PROP_TABLE("GroundProps")
         float size = gloParent->projectGrdTexSize;
+        float height = gloParent->projectGrdHeight;
         PROP_ROW(
             "Texture Size", if (ImGui::DragFloat("##GrdSize", &size, 1.0f, 1.0f, 10000.0f, "%.1f") || common::ValueScroll(&size, 10.0f, 1.0f)) { gloParent->projectGrdTexSize = std::max(1.0f, size); if (gViewport) gViewport->setGroundTextureSize(gloParent->projectGrdTexSize); })
+        PROP_ROW(
+            "Ground Height", if (ImGui::DragFloat("##GrdHeight", &height, 0.1f, -1000.0f, 1000.0f, "%.1f m") || common::ValueScroll(&height, 1.0f, 0.1f)) { gloParent->projectGrdHeight = height; if (gViewport) gViewport->setGroundHeight(gloParent->projectGrdHeight); })
         PROP_ROW(
             "Texture", if (ImGui::Button("Load...")) { auto f = pfd::open_file("Open Ground Texture", ".", {"Image Files", "*.jpg *.png *.bmp", "All Files", "*"}).result(); if (!f.empty()) { if (gViewport) { gViewport->loadGroundTexture(f[0]); gloParent->projectGroundTex = f[0]; } } })
         END_PROP_TABLE()
         ImGui::TreePop();
     }
-    if (ImGui::TreeNodeEx("Lighting & Shadows", 0)) {
+    if (ImGui::TreeNodeEx("Lighting & Shadows", ImGuiTreeNodeFlags_DefaultOpen)) {
         BEGIN_PROP_TABLE("ShadowProps")
         extern Viewport* gViewport;
         PROP_ROW(
@@ -1154,7 +1298,7 @@ void LeftPanel::renderEnvironmentTab() {
         END_PROP_TABLE()
         ImGui::TreePop();
     }
-    if (ImGui::TreeNodeEx("Skybox", 0)) {
+    if (ImGui::TreeNodeEx("Skybox", ImGuiTreeNodeFlags_DefaultOpen)) {
         BEGIN_PROP_TABLE("SkyboxProps")
         if (!gloParent->skyboxAvailable)
             ImGui::BeginDisabled();
@@ -1172,7 +1316,7 @@ void LeftPanel::renderEnvironmentTab() {
         END_PROP_TABLE()
         ImGui::TreePop();
     }
-    if (ImGui::TreeNodeEx("Mist (Far Field)", 0)) {
+    if (ImGui::TreeNodeEx("Mist (Far Field)", ImGuiTreeNodeFlags_DefaultOpen)) {
         BEGIN_PROP_TABLE("MistProps")
         extern Viewport* gViewport;
         PROP_ROW(
@@ -1196,206 +1340,5 @@ void LeftPanel::renderEnvironmentTab() {
             })
         END_PROP_TABLE()
         ImGui::TreePop();
-    }
-    ImGui::Separator();
-    if (ImGui::TreeNodeEx("3D Geometry (STL)", 0)) {
-        renderStlList();
-        ImGui::TreePop();
-    }
-}
-
-void LeftPanel::renderStlList() {
-    if (ImGui::Button("Add STL...")) {
-        auto f = pfd::open_file("Open STL file", ".", {"STL Files", "*.stl", "All Files", "*"}).result();
-        if (!f.empty() && gViewport && gViewport->addStlMesh(f[0])) {
-            DummyGlobal::StlSettings s;
-            s.path = f[0];
-            s.color = glm::vec3(0.7f);
-            s.visible = true;
-            s.showWireframe = false;
-            gloParent->projectStls.push_back(s);
-        }
-    }
-    if (ImGui::BeginTable("StlTable", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
-        ImGui::TableSetupColumn("Visible", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoHeaderLabel, 60.0f);
-        ImGui::TableSetupColumn("Wireframe", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoHeaderLabel, 80.0f);
-        ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Color", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoHeaderLabel, 45.0f);
-        ImGui::TableSetupColumn("##del", ImGuiTableColumnFlags_WidthFixed, 40.0f);
-        ImGui::TableHeadersRow();
-
-        // Manual centered headers
-        auto centerStlHeader = [&](int idx, const char* name) {
-            ImGui::TableSetColumnIndex(idx);
-            float tw = ImGui::CalcTextSize(name).x;
-            float cw = ImGui::GetContentRegionAvail().x;
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (cw - tw) * 0.5f);
-            ImGui::TableHeader(name);
-        };
-        centerStlHeader(0, "Visible");
-        centerStlHeader(1, "Wireframe");
-        centerStlHeader(3, "Color");
-
-        if (gViewport)
-            for (int i = 0; i < (int)gViewport->stlMeshes.size(); ++i) {
-                auto& sm = gViewport->stlMeshes[i];
-                ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - 20.0f) * 0.5f);
-                if (ImGui::Checkbox(("##v" + std::to_string(i)).c_str(), &sm.visible)) {
-                    gloParent->projectStls[i].visible = sm.visible;
-                    gViewport->markSceneDirty();
-                }
-
-                ImGui::TableSetColumnIndex(1);
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - 20.0f) * 0.5f);
-                if (ImGui::Checkbox(("##w" + std::to_string(i)).c_str(), &sm.showWireframe)) {
-                    gloParent->projectStls[i].showWireframe = sm.showWireframe;
-                    gViewport->markSceneDirty();
-                }
-
-                ImGui::TableSetColumnIndex(2);
-                ImGui::Text("%s", std::filesystem::path(sm.path).filename().string().c_str());
-
-                ImGui::TableSetColumnIndex(3);
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - 20.0f) * 0.5f);
-                if (ImGui::ColorEdit3(("##c" + std::to_string(i)).c_str(), &sm.color.x, ImGuiColorEditFlags_NoInputs)) {
-                    gloParent->projectStls[i].color = sm.color;
-                    gViewport->markSceneDirty();
-                }
-
-                ImGui::TableSetColumnIndex(4);
-                float bh = ImGui::GetFrameHeight();
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - bh) * 0.5f);
-                if (ImGui::Button(("X##" + std::to_string(i)).c_str(), ImVec2(bh, bh))) {
-                    gViewport->removeStlMesh(i);
-                    gloParent->projectStls.erase(gloParent->projectStls.begin() + i);
-                    i--;
-                }
-            }
-        ImGui::EndTable();
-    }
-}
-
-void LeftPanel::renderMeasurements(trackHandler* hTrack, Application* app) {
-    bool trainOpen = ImGui::TreeNodeEx("Train Generator (Array of Measurement Points)", 0);
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Generate a grid of measurement offsets modeling a complete coaster train (cars, rows, and seats).");
-    }
-    if (trainOpen) {
-        renderTrainGenerator(hTrack, app);
-        ImGui::TreePop();
-    }
-
-    bool pointsOpen = ImGui::TreeNodeEx("Measurement Points", 0);
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Manage individual custom measurement offsets (e.g. specific seating positions, cameras, or clearances) relative to the track centerline.");
-    }
-    if (pointsOpen) {
-        renderOffsetList(hTrack, app);
-        ImGui::TreePop();
-    }
-}
-
-void LeftPanel::renderTrainGenerator(trackHandler* hTrack, Application* app) {
-    static int arrCars = 5, arrRows = 2, arrSeats = 2;
-    static glm::vec3 arrSpacing(0.9f, 0.0f, -0.9f);
-    static float arrCarSpacing = 2.8f;
-    BEGIN_PROP_TABLE("TrainGenTable");
-    PROP_ROW("Cars", ImGui::DragInt("##Cars", &arrCars, 1, 1, 20));
-    PROP_ROW(
-        "Car Distance", if (ImGui::DragFloat("##CarDist", &arrCarSpacing, 0.1f, 0.0f, 20.0f)) { if (arrCarSpacing < 0.0f) arrCarSpacing = 0.0f; });
-    PROP_ROW("Rows/Car", ImGui::DragInt("##Rows", &arrRows, 1, 1, 10));
-    PROP_ROW("Seats/Row", ImGui::DragInt("##Seats", &arrSeats, 1, 1, 10));
-    PROP_ROW("Spacing", ImGui::DragFloat3("##Spacing", &arrSpacing.x, 0.1f));
-    END_PROP_TABLE();
-    if (ImGui::Button("Generate Measurement Points")) {
-        float centerOffsetZ = ((arrCars - 1) * -arrCarSpacing + (arrRows - 1) * arrSpacing.z) / 2.0f;
-        for (int c = 0; c < arrCars; ++c)
-            for (int r = 0; r < arrRows; ++r)
-                for (int s = 0; s < arrSeats; ++s) {
-                    float hue = (float)(c * arrRows + r) / (float)(arrCars * arrRows);
-                    ImVec4 rgb;
-                    ImGui::ColorConvertHSVtoRGB(hue, 1.0f, 1.0f, rgb.x, rgb.y, rgb.z);
-                    track::TrainOffset o;
-                    snprintf(o.name, 64, "C%d R%d S%d", c + 1, r + 1, s + 1);
-                    o.offset = glm::vec3((s - (arrSeats - 1) / 2.0f) * arrSpacing.x, r * arrSpacing.y, (c * -arrCarSpacing + r * arrSpacing.z) - centerOffsetZ);
-                    o.color = glm::vec3(rgb.x, rgb.y, rgb.z);
-                    hTrack->trackData->trainOffsets.push_back(o);
-                }
-        hTrack->trackData->hasChanged = true;
-        hTrack->trackData->graphChanged = true;
-        app->pushUndo();
-    }
-}
-
-void LeftPanel::renderOffsetList(trackHandler* hTrack, Application* app) {
-    if (ImGui::BeginTable("MeasurementPointTable", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
-        ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Position", ImGuiTableColumnFlags_WidthFixed, 180.0f);
-        ImGui::TableSetupColumn("Norm.", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoHeaderLabel, 45.0f);
-        ImGui::TableSetupColumn("Lat.", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoHeaderLabel, 45.0f);
-        ImGui::TableSetupColumn("Color", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoHeaderLabel, 45.0f);
-        ImGui::TableSetupColumn("##del", ImGuiTableColumnFlags_WidthFixed, 40.0f);
-        ImGui::TableHeadersRow();
-
-        auto centerHeader = [&](int idx, const char* name) {
-            ImGui::TableSetColumnIndex(idx);
-            float tw = ImGui::CalcTextSize(name).x;
-            float cw = ImGui::GetContentRegionAvail().x;
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (cw - tw) * 0.5f);
-            ImGui::TableHeader(name);
-        };
-        centerHeader(2, "Norm.");
-        centerHeader(3, "Lat.");
-        centerHeader(4, "Color");
-
-        for (size_t i = 0; i < hTrack->trackData->trainOffsets.size(); ++i) {
-            ImGui::PushID((int)i);
-            auto& o = hTrack->trackData->trainOffsets[i];
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0);
-            ImGui::SetNextItemWidth(-FLT_MIN);
-            ImGui::InputText("##N", o.name, 64);
-            ImGui::TableSetColumnIndex(1);
-            ImGui::SetNextItemWidth(-FLT_MIN);
-            if (ImGui::DragFloat3("##P", &o.offset.x, 0.1f)) {
-                hTrack->trackData->hasChanged = true;
-                hTrack->trackData->graphChanged = true;
-            }
-
-            ImGui::TableSetColumnIndex(2);
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - 20.0f) * 0.5f);
-            ImGui::Checkbox("##showN", &o.showNormal);
-
-            ImGui::TableSetColumnIndex(3);
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - 20.0f) * 0.5f);
-            ImGui::Checkbox("##showL", &o.showLateral);
-
-            ImGui::TableSetColumnIndex(4);
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - 20.0f) * 0.5f);
-            ImGui::ColorEdit3("##C", &o.color.x, ImGuiColorEditFlags_NoInputs);
-
-            ImGui::TableSetColumnIndex(5);
-            float bh = ImGui::GetFrameHeight();
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (ImGui::GetContentRegionAvail().x - bh) * 0.5f);
-            if (ImGui::Button("X##D", ImVec2(bh, bh))) {
-                hTrack->trackData->trainOffsets.erase(hTrack->trackData->trainOffsets.begin() + i);
-                hTrack->trackData->hasChanged = true;
-                hTrack->trackData->graphChanged = true;
-                app->pushUndo();
-                ImGui::PopID();
-                break;
-            }
-            ImGui::PopID();
-        }
-        ImGui::EndTable();
-    }
-    if (ImGui::Button("Add Measurement Point")) {
-        track::TrainOffset o;
-        hTrack->trackData->trainOffsets.push_back(o);
-        hTrack->trackData->hasChanged = true;
-        hTrack->trackData->graphChanged = true;
-        app->pushUndo();
     }
 }

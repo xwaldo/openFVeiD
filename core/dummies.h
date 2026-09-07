@@ -24,6 +24,7 @@
 #include <fstream>
 #include <sstream>
 #include <glm/glm.hpp>
+#include <imgui.h>
 
 // Forward declarations
 class track;
@@ -42,6 +43,9 @@ struct DummyOptions {
     int theme = 0; // 0: Dark, 1: Light, 2: Classic
     bool shadowsEnabled = true;
     bool transparentGraphs = false;
+    bool useLegacyHeartline = false;
+    bool lookAheadPovSmoothing = true;
+    bool enableCurveChasing = false;
     float fov = 90.0f;
     float mouseSensitivity = 1.0f;
     float sprintMultiplier = 2.0f;
@@ -49,6 +53,14 @@ struct DummyOptions {
     int keyBackward = 0;
     int keyLeft = 0;
     int keyRight = 0;
+    int keyOverlayWarnings = 0;
+    int keyOverlayScenery = 0;
+    int keyPrependTransition = ImGuiKey_LeftBracket;
+    int keyAppendTransition = ImGuiKey_RightBracket;
+    int keyViewPerspective = ImGuiKey_None;
+    int keyViewTop = ImGuiKey_None;
+    int keyViewSide = ImGuiKey_None;
+    int keyViewFront = ImGuiKey_None;
     bool autoFocusOnSelection = false;
     float fontSize = 15.0f;
     int screenshotMultiplier = 2;
@@ -67,8 +79,10 @@ struct DummyOptions {
     bool skyboxEnabled = true;
     bool strictCustomStyleLock = true;
     bool editShadows = true;
-    bool stlShadowsEnabled = false; // Experimental
-    float sunPitch = -90.0f;        // Directly above
+    bool glbShadowsEnabled = false;  // Experimental
+    bool graphOverlayEnabled = true; // Telemetry overlay
+    bool relativeExport = false;     // Relative NoLimits 2 export coordinate behaviour
+    float sunPitch = -90.0f;         // Directly above
     float sunYaw = 0.0f;
     float stallSpeed = 0.1f;
     float graphSpacingLimit = 0.1f;
@@ -76,21 +90,25 @@ struct DummyOptions {
     float scrollIncrement = 0.1f;
     float scrollShiftIncrement = 10.0f;
 
-    glm::vec3 graphColors[14] = {
-        glm::vec3(1.0f, 0.2f, 0.2f), // EditRoll
-        glm::vec3(0.4f, 0.7f, 1.0f), // EditNormal
-        glm::vec3(0.2f, 1.0f, 0.2f), // EditLateral
-        glm::vec3(1.0f, 0.5f, 0.0f), // Banking (Orange)
-        glm::vec3(0.7f, 0.2f, 0.8f), // RollSpeed (Purple)
-        glm::vec3(1.0f, 0.3f, 0.6f), // RollAccel (Pink)
-        glm::vec3(0.0f, 0.7f, 0.7f), // NForce (Teal)
-        glm::vec3(0.5f, 0.8f, 1.0f), // NForceChange (Sky Blue)
-        glm::vec3(0.6f, 0.9f, 0.0f), // LForce (Lime)
-        glm::vec3(0.4f, 0.6f, 0.3f), // LForceChange (Sage)
-        glm::vec3(0.9f, 0.7f, 0.1f), // PitchChange (Gold)
-        glm::vec3(0.7f, 0.5f, 1.0f), // YawChange (Lavender)
-        glm::vec3(0.9f, 0.4f, 0.1f), // WorldPitchChange (Orange)
-        glm::vec3(0.1f, 0.9f, 0.4f)  // WorldYawChange (Bright Green)
+    glm::vec3 graphColors[18] = {
+        glm::vec3(1.0f, 0.2f, 0.2f), // EditRoll (0)
+        glm::vec3(0.4f, 0.7f, 1.0f), // EditNormal (1)
+        glm::vec3(0.2f, 1.0f, 0.2f), // EditLateral (2)
+        glm::vec3(1.0f, 0.5f, 0.0f), // Banking (3) - Orange
+        glm::vec3(0.7f, 0.2f, 0.8f), // RollSpeed (4) - Purple
+        glm::vec3(0.5f, 0.1f, 0.6f), // TrueRollSpeed (5) - Dark Purple
+        glm::vec3(1.0f, 0.3f, 0.6f), // RollAccel (6) - Pink
+        glm::vec3(0.0f, 0.7f, 0.7f), // NForce (7) - Teal
+        glm::vec3(0.5f, 0.8f, 1.0f), // NForceChange (8) - Sky Blue
+        glm::vec3(0.6f, 0.9f, 0.0f), // LForce (9) - Lime
+        glm::vec3(0.4f, 0.6f, 0.3f), // LForceChange (10) - Sage
+        glm::vec3(0.9f, 0.7f, 0.1f), // PitchChange (11) - Gold
+        glm::vec3(0.7f, 0.5f, 1.0f), // YawChange (12) - Lavender
+        glm::vec3(0.9f, 0.4f, 0.1f), // WorldPitchChange (13) - Orange-red
+        glm::vec3(0.1f, 0.9f, 0.4f), // WorldYawChange (14) - Bright Green
+        glm::vec3(0.2f, 0.8f, 0.8f), // Velocity (15) - Cyan
+        glm::vec3(0.8f, 0.8f, 0.2f), // WorldPitch (16) - Yellow
+        glm::vec3(0.9f, 0.2f, 0.4f)  // Acceleration (17) - Pink-Red
     };
 
     void save(const std::string& path) const {
@@ -105,10 +123,22 @@ struct DummyOptions {
                 << floorColor.x << " " << floorColor.y << " " << floorColor.z << " "
                 << fontSize << " "
                 << fov << " "
+                << glbShadowsEnabled << " "
+                << graphOverlayEnabled << " "
+                << lookAheadPovSmoothing << " "
+                << enableCurveChasing << " "
                 << keyBackward << " "
                 << keyForward << " "
                 << keyLeft << " "
                 << keyRight << " "
+                << keyOverlayWarnings << " "
+                << keyOverlayScenery << " "
+                << keyAppendTransition << " "
+                << keyPrependTransition << " "
+                << keyViewPerspective << " "
+                << keyViewTop << " "
+                << keyViewSide << " "
+                << keyViewFront << " "
                 << maxUndoChanges << " "
                 << measures << " "
                 << meshQuality << " "
@@ -119,6 +149,7 @@ struct DummyOptions {
                 << mistNear << " "
                 << mouseSensitivity << " "
                 << msaaSamples << " "
+                << relativeExport << " "
                 << screenshotMultiplier << " "
                 << scrollCtrlIncrement << " "
                 << scrollIncrement << " "
@@ -128,7 +159,6 @@ struct DummyOptions {
                 << skyboxEnabled << " "
                 << sprintMultiplier << " "
                 << stallSpeed << " "
-                << stlShadowsEnabled << " "
                 << strictCustomStyleLock << " "
                 << sunPitch << " "
                 << sunYaw << " "
@@ -136,7 +166,7 @@ struct DummyOptions {
                 << theme << " "
                 << transparentGraphs << " "
                 << vSync << "\n";
-            for (int i = 0; i < 14; ++i) {
+            for (int i = 0; i < 18; ++i) {
                 out << graphColors[i].x << " " << graphColors[i].y << " " << graphColors[i].z << " ";
             }
             out << "\n";
@@ -151,9 +181,9 @@ struct DummyOptions {
                 return;
 
             if (version == "FVD_OPT_V1") {
-                in >> autoFocusOnSelection >> backgroundColor.x >> backgroundColor.y >> backgroundColor.z >> drawGrid >> editShadows >> enforceMinRadius >> floorColor.x >> floorColor.y >> floorColor.z >> fontSize >> fov >> keyBackward >> keyForward >> keyLeft >> keyRight >> maxUndoChanges >> measures >> meshQuality >> minRadius >> mistColor.x >> mistColor.y >> mistColor.z >> mistEnabled >> mistFar >> mistNear >> mouseSensitivity >> msaaSamples >> screenshotMultiplier >> scrollCtrlIncrement >> scrollIncrement >> scrollShiftIncrement >> shadowsEnabled >> showFPS >> skyboxEnabled >> sprintMultiplier >> stallSpeed >> stlShadowsEnabled >> strictCustomStyleLock >> sunPitch >> sunYaw >> targetFPS >> theme >> transparentGraphs >> vSync;
+                in >> autoFocusOnSelection >> backgroundColor.x >> backgroundColor.y >> backgroundColor.z >> drawGrid >> editShadows >> enforceMinRadius >> floorColor.x >> floorColor.y >> floorColor.z >> fontSize >> fov >> glbShadowsEnabled >> graphOverlayEnabled >> lookAheadPovSmoothing >> enableCurveChasing >> keyBackward >> keyForward >> keyLeft >> keyRight >> keyOverlayWarnings >> keyOverlayScenery >> keyAppendTransition >> keyPrependTransition >> keyViewPerspective >> keyViewTop >> keyViewSide >> keyViewFront >> maxUndoChanges >> measures >> meshQuality >> minRadius >> mistColor.x >> mistColor.y >> mistColor.z >> mistEnabled >> mistFar >> mistNear >> mouseSensitivity >> msaaSamples >> relativeExport >> screenshotMultiplier >> scrollCtrlIncrement >> scrollIncrement >> scrollShiftIncrement >> shadowsEnabled >> showFPS >> skyboxEnabled >> sprintMultiplier >> stallSpeed >> strictCustomStyleLock >> sunPitch >> sunYaw >> targetFPS >> theme >> transparentGraphs >> vSync;
 
-                for (int i = 0; i < 14; ++i) {
+                for (int i = 0; i < 18; ++i) {
                     if (!(in >> graphColors[i].x >> graphColors[i].y >> graphColors[i].z))
                         break;
                 }
@@ -197,19 +227,19 @@ struct DummyGlobal {
 
     float projectGrdTexSize = 440.0f;
     std::string projectGroundTex = "";
+    float projectGrdHeight = 0.0f;
     bool skyboxAvailable = false;
-    struct StlSettings {
+    struct GlbSettings {
         std::string path;
-        glm::vec3 color = glm::vec3(0.7f, 0.7f, 0.7f);
         bool visible = true;
-        bool showWireframe = false;
     };
-    std::vector<StlSettings> projectStls;
+    std::vector<GlbSettings> projectGlbs;
 
     void resetEnvironment() {
         projectGrdTexSize = 440.0f;
         projectGroundTex = "";
-        projectStls.clear();
+        projectGrdHeight = 0.0f;
+        projectGlbs.clear();
     }
 
     void updateInfoPanel() {}

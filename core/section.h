@@ -40,9 +40,9 @@ enum secType {
     curved,
     forced,
     geometric,
-    bezier,
-    nolimitscsv,
-    geometricriderlocal
+    static_spline,
+    geometricriderlocal,
+    nolimitscsv
 };
 
 struct ExportNode {
@@ -79,6 +79,7 @@ public:
     double getSpeed();
     bool setLocked(eFunctype func, int _id, bool _active);
     void calcDirFromLast(int i);
+    void chaseCurves();
     std::vector<mnode> lNodes;
     track* parent;
     func* rollFunc;
@@ -108,8 +109,7 @@ public:
     func* latForce;
     std::string sName;
 
-    // Bezier Section Parameters
-    std::vector<bezier_t*> bezList;
+    // Support line parameters
     std::vector<glm::dvec3> supList;
 };
 

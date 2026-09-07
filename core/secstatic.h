@@ -1,3 +1,6 @@
+#ifndef SECSTATIC_H
+#define SECSTATIC_H
+
 /*
 #    FVD++, an advanced coaster design tool
 #    Copyright (C) 2026 Veia <h27ck@proton.me>
@@ -16,21 +19,21 @@
 #    along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-#ifndef STLREADER_H
-#define STLREADER_H
-
+#include "section.h"
 #include <vector>
-#include <string>
-#include "lenassert.h"
 
-struct Triangle {
-    glm::dvec3 normal;
-    glm::dvec3 vertices[3];
+class secstatic : public section {
+public:
+    ~secstatic();
+    secstatic(track* getParent, mnode* first);
+    virtual int updateSection(int node = 0);
+    virtual void saveSection(std::ostream& file);
+    virtual void loadSection(std::istream& file);
+    virtual double getMaxArgument();
+    virtual bool isLockable(func* _func);
+    virtual bool isInFunction(int index, subfunc* func);
+
+    std::vector<mnode> staticNodes; // Stored relative to the start node
 };
 
-bool readStl(const std::string& fileName, std::vector<Triangle>& triangles);
-
-std::vector<glm::dvec3> extractVertices(const std::vector<Triangle>& triangles);
-std::vector<glm::dvec3> extractVerticesNormal(const std::vector<Triangle>& triangles);
-
-#endif // STLREADER_H
+#endif // SECSTATIC_H

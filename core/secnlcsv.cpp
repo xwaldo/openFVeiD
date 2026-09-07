@@ -8,6 +8,8 @@
 #include <fstream>
 #include <sstream>
 #include <cmath>
+#include <limits>
+#include <glm/gtx/quaternion.hpp>
 
 using namespace std;
 
@@ -33,6 +35,7 @@ void secnlcsv::applyFiltering() {
 }
 
 int secnlcsv::updateSection(int node) {
+    chaseCurves();
     (void)node;
 
     initDistances();
@@ -198,6 +201,7 @@ mnode secnlcsv::getNodeAtDistance(float distance) {
 
     return resultNode;
 }
+
 void secnlcsv::saveSection(std::ostream& file) {
     int size = importedNodes.size();
 
@@ -338,6 +342,11 @@ void secnlcsv::loadTrack(std::string filename) {
             glm::dvec3 vNL = glm::normalize(importedNodes.front().vDir);
             glm::dvec3 lNL = glm::normalize(importedNodes.front().vLat);
             glm::dvec3 nNL = glm::normalize(glm::cross(vNL, lNL));
+            lNL = glm::cross(nNL, vNL);
+
+            glm::dvec3 nNL_proj = nNL - glm::dot(nNL, vNL) * vNL;
+            if (glm::length(nNL_proj) > 1e-4)
+                nNL = glm::normalize(nNL_proj);
             lNL = glm::cross(nNL, vNL);
 
             glm::dmat3 Mcsv0(vNL, lNL, nNL);

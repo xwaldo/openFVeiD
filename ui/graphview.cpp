@@ -17,10 +17,12 @@
 */
 
 #include "graphview.h"
+#include "application.h"
 #include "renderer/viewport.h"
 #include "trackhandler.h"
 #include "track.h"
 #include "section.h"
+#include "seccurved.h"
 #include "function.h"
 #include "subfunction.h"
 #include "dummies.h"
@@ -32,23 +34,21 @@
 #include <iomanip>
 
 GraphView::GraphView()
-    : needsUpdate(true), showSectionBoundaries(true), showPOVMarker(true), doAutoFocus(false), autoScaleYEdit(true), autoScaleYResult(true), autoScaleYMeasure(true), selectedSubfunc(nullptr), lastSelectedMinArg(-1.0), lastSelectedMaxArg(-1.0) {
+    : needsUpdate(true), playheadSnappingEnabled(true), doAutoFocus(false), autoScaleYEdit(true), autoScaleYResult(true), autoScaleYMeasure(true), playheadLocked(false), lockedPOVPos(0), selectedSubfunc(nullptr), lastSelectedMinArg(-1.0), lastSelectedMaxArg(-1.0) {
     graphs.resize((int)GraphType::Count);
 
     auto getCol = [](GraphType type) {
-        if (type >= GraphType::Velocity) {
-            return ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
-        }
         glm::vec3 c = gloParent->mOptions->graphColors[(int)type];
         return ImVec4(c.x, c.y, c.z, 1.0f);
     };
 
-    graphs[(int)GraphType::EditRoll] = {{}, "Roll Speed", getCol(GraphType::EditRoll), true};
+    graphs[(int)GraphType::EditRoll] = {{}, "Roll Rate", getCol(GraphType::EditRoll), true};
     graphs[(int)GraphType::EditNormal] = {{}, "Normal Force", getCol(GraphType::EditNormal), true};
     graphs[(int)GraphType::EditLateral] = {{}, "Lateral Force", getCol(GraphType::EditLateral), true};
 
     graphs[(int)GraphType::Banking] = {{}, "Banking", getCol(GraphType::Banking), false};
-    graphs[(int)GraphType::RollSpeed] = {{}, "Roll Speed", getCol(GraphType::RollSpeed), false};
+    graphs[(int)GraphType::RollRate] = {{}, "Roll Rate", getCol(GraphType::RollRate), false};
+    graphs[(int)GraphType::RiderRollRate] = {{}, "Rider Roll Rate", getCol(GraphType::RiderRollRate), false};
     graphs[(int)GraphType::RollAccel] = {{}, "Roll Accel", getCol(GraphType::RollAccel), false};
     graphs[(int)GraphType::NForce] = {{}, "Normal Force", getCol(GraphType::NForce), false};
     graphs[(int)GraphType::NForceChange] = {{}, "Force Change", getCol(GraphType::NForceChange), false};
@@ -56,13 +56,25 @@ GraphView::GraphView()
     graphs[(int)GraphType::LForceChange] = {{}, "Force Change", getCol(GraphType::LForceChange), false};
     graphs[(int)GraphType::PitchChange] = {{}, "Rider Pitch Change", getCol(GraphType::PitchChange), false};
     graphs[(int)GraphType::YawChange] = {{}, "Rider Yaw Change", getCol(GraphType::YawChange), false};
-    graphs[(int)GraphType::Velocity] = {{}, "Velocity", ImVec4(0.2f, 0.8f, 0.8f, 1.0f), false};
-    graphs[(int)GraphType::WorldPitch] = {{}, "World Pitch", ImVec4(0.8f, 0.8f, 0.2f, 1.0f), false};
-    graphs[(int)GraphType::WorldPitchChange] = {{}, "World Pitch Change", ImVec4(0.9f, 0.4f, 0.1f, 1.0f), false};
-    graphs[(int)GraphType::WorldYawChange] = {{}, "World Yaw Change", ImVec4(0.1f, 0.9f, 0.4f, 1.0f), false};
+    graphs[(int)GraphType::Velocity] = {{}, "Velocity", getCol(GraphType::Velocity), false};
+    graphs[(int)GraphType::WorldPitch] = {{}, "World Pitch", getCol(GraphType::WorldPitch), false};
+    graphs[(int)GraphType::WorldPitchChange] = {{}, "World Pitch Change", getCol(GraphType::WorldPitchChange), false};
+    graphs[(int)GraphType::WorldYawChange] = {{}, "World Yaw Change", getCol(GraphType::WorldYawChange), false};
+    graphs[(int)GraphType::LongitudinalAccel] = {{}, "Longitudinal Accel", getCol(GraphType::LongitudinalAccel), false};
 }
 
 GraphView::~GraphView() {}
+
+void GraphView::lockPlayheadToCurrentTransition(trackHandler* hTrack) {
+    playheadLocked = false;
+    lockedTransition = nullptr;
+    lockedPOVPos = gViewport ? gViewport->getPOVPos() : 0;
+
+    if (gloParent && gloParent->selectedFunc) {
+        lockedTransition = gloParent->selectedFunc;
+        playheadLocked = true;
+    }
+}
 
 void GraphView::renderList(trackHandler* hTrack) {
     if (!hTrack || !hTrack->trackData)
@@ -70,9 +82,6 @@ void GraphView::renderList(trackHandler* hTrack) {
 
     // Refresh colors from Options
     auto getCol = [](GraphType type) {
-        if (type >= GraphType::Velocity) {
-            return ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
-        }
         glm::vec3 c = gloParent->mOptions->graphColors[(int)type];
         return ImVec4(c.x, c.y, c.z, 1.0f);
     };
@@ -100,8 +109,15 @@ void GraphView::renderList(trackHandler* hTrack) {
     if (hTrack->trackData->activeSection != lastActiveSection) {
         lastActiveSection = hTrack->trackData->activeSection;
         needsUpdate = true;
-        if (lastActiveSection)
+        if (lastActiveSection) {
             doAutoFocus = true;
+            if (playheadSnappingEnabled) {
+                int startIdx = hTrack->trackData->getNumPoints(lastActiveSection);
+                int endIdx = startIdx + (int)lastActiveSection->lNodes.size() - 1;
+                gViewport->setPOVPos(endIdx);
+                povAccumulator = (float)endIdx;
+            }
+        }
     }
 
     if (needsUpdate || hTrack->trackData->graphChanged) {
@@ -128,34 +144,62 @@ void GraphView::renderList(trackHandler* hTrack) {
     std::string rateUnit = distArg ? "[deg/m]" : "[deg/s]";
 
     if (ImGui::TreeNodeEx("Editable Graphs", ImGuiTreeNodeFlags_DefaultOpen)) {
-        ImGui::Checkbox("Roll Speed [deg/s]##eg", &graphs[(int)GraphType::EditRoll].visible);
+        std::string egRollLabel = "Roll Rate " + rateUnit + "##eg";
+        ImGui::PushStyleColor(ImGuiCol_Text, graphs[(int)GraphType::EditRoll].color);
+        ImGui::Checkbox(egRollLabel.c_str(), &graphs[(int)GraphType::EditRoll].visible);
+        ImGui::PopStyleColor();
         if (isForced || isGeo) {
             std::string nLabel = isGeo ? "Pitch Change [deg/s]##eg" : "Normal Force [g]##eg";
             std::string lLabel = isGeo ? "Yaw Change [deg/s]##eg" : "Lateral Force [g]##eg";
+            ImGui::PushStyleColor(ImGuiCol_Text, graphs[(int)GraphType::EditNormal].color);
             ImGui::Checkbox(nLabel.c_str(), &graphs[(int)GraphType::EditNormal].visible);
+            ImGui::PopStyleColor();
+            ImGui::PushStyleColor(ImGuiCol_Text, graphs[(int)GraphType::EditLateral].color);
             ImGui::Checkbox(lLabel.c_str(), &graphs[(int)GraphType::EditLateral].visible);
+            ImGui::PopStyleColor();
         }
         ImGui::TreePop();
     }
     if (ImGui::TreeNodeEx("Resulting Graphs", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (ImGui::TreeNodeEx("Roll##rg", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushStyleColor(ImGuiCol_Text, graphs[(int)GraphType::Banking].color);
             ImGui::Checkbox("Banking [deg]##rg", &graphs[(int)GraphType::Banking].visible);
+            ImGui::PopStyleColor();
+
+            ImGui::PushStyleColor(ImGuiCol_Text, graphs[(int)GraphType::RollRate].color);
+            ImGui::Checkbox("Roll Rate [deg/s]##rg", &graphs[(int)GraphType::RollRate].visible);
+            ImGui::PopStyleColor();
+
+            ImGui::PushStyleColor(ImGuiCol_Text, graphs[(int)GraphType::RiderRollRate].color);
+            ImGui::Checkbox("Rider Roll Rate [deg/s]##rg", &graphs[(int)GraphType::RiderRollRate].visible);
+            ImGui::PopStyleColor();
+
+            ImGui::PushStyleColor(ImGuiCol_Text, graphs[(int)GraphType::RollAccel].color);
             ImGui::Checkbox("Roll Accel [deg/s²]##rg", &graphs[(int)GraphType::RollAccel].visible);
+            ImGui::PopStyleColor();
             ImGui::TreePop();
         }
         if (ImGui::TreeNodeEx("Normal Force##rg", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushStyleColor(ImGuiCol_Text, graphs[(int)GraphType::NForce].color);
             ImGui::Checkbox("Normal Force [g]##rg_nf", &graphs[(int)GraphType::NForce].visible);
+            ImGui::PopStyleColor();
             ImGui::BeginDisabled(true);
             graphs[(int)GraphType::NForceChange].visible = false;
+            ImGui::PushStyleColor(ImGuiCol_Text, graphs[(int)GraphType::NForceChange].color);
             ImGui::Checkbox("Force Change [g/s]##rg_nfc", &graphs[(int)GraphType::NForceChange].visible);
+            ImGui::PopStyleColor();
             ImGui::EndDisabled();
             ImGui::TreePop();
         }
         if (ImGui::TreeNodeEx("Lateral Force##rg", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushStyleColor(ImGuiCol_Text, graphs[(int)GraphType::LForce].color);
             ImGui::Checkbox("Lateral Force [g]##rg_lf", &graphs[(int)GraphType::LForce].visible);
+            ImGui::PopStyleColor();
             ImGui::BeginDisabled(true);
             graphs[(int)GraphType::LForceChange].visible = false;
+            ImGui::PushStyleColor(ImGuiCol_Text, graphs[(int)GraphType::LForceChange].color);
             ImGui::Checkbox("Force Change [g/s]##rg_lfc", &graphs[(int)GraphType::LForceChange].visible);
+            ImGui::PopStyleColor();
             ImGui::EndDisabled();
             ImGui::TreePop();
         }
@@ -164,17 +208,35 @@ void GraphView::renderList(trackHandler* hTrack) {
             std::string rycLabel = "Rider Yaw Change " + rateUnit + "##rg";
             std::string wpcLabel = "World Pitch Change " + rateUnit + "##rg";
             std::string wycLabel = "World Yaw Change " + rateUnit + "##rg";
+            ImGui::PushStyleColor(ImGuiCol_Text, graphs[(int)GraphType::PitchChange].color);
             ImGui::Checkbox(rpcLabel.c_str(), &graphs[(int)GraphType::PitchChange].visible);
+            ImGui::PopStyleColor();
+            ImGui::PushStyleColor(ImGuiCol_Text, graphs[(int)GraphType::YawChange].color);
             ImGui::Checkbox(rycLabel.c_str(), &graphs[(int)GraphType::YawChange].visible);
+            ImGui::PopStyleColor();
+            ImGui::PushStyleColor(ImGuiCol_Text, graphs[(int)GraphType::WorldPitch].color);
+            ImGui::Checkbox("World Pitch [deg]##rg", &graphs[(int)GraphType::WorldPitch].visible);
+            ImGui::PopStyleColor();
+            ImGui::PushStyleColor(ImGuiCol_Text, graphs[(int)GraphType::WorldPitchChange].color);
             ImGui::Checkbox(wpcLabel.c_str(), &graphs[(int)GraphType::WorldPitchChange].visible);
+            ImGui::PopStyleColor();
+            ImGui::PushStyleColor(ImGuiCol_Text, graphs[(int)GraphType::WorldYawChange].color);
             ImGui::Checkbox(wycLabel.c_str(), &graphs[(int)GraphType::WorldYawChange].visible);
+            ImGui::PopStyleColor();
             ImGui::TreePop();
         }
-        ImGui::TreePop();
-    }
-    if (ImGui::TreeNodeEx("Markers")) {
-        ImGui::Checkbox("Boundaries", &showSectionBoundaries);
-        ImGui::Checkbox("POV", &showPOVMarker);
+        if (ImGui::TreeNodeEx("Speed & Acceleration##rg", ImGuiTreeNodeFlags_DefaultOpen)) {
+            std::string velLabel = "Velocity [" + gloParent->mOptions->getSpeedString() + "]##rg";
+            ImGui::PushStyleColor(ImGuiCol_Text, graphs[(int)GraphType::Velocity].color);
+            ImGui::Checkbox(velLabel.c_str(), &graphs[(int)GraphType::Velocity].visible);
+            ImGui::PopStyleColor();
+
+            ImGui::PushStyleColor(ImGuiCol_Text, graphs[(int)GraphType::LongitudinalAccel].color);
+            ImGui::Checkbox("Longitudinal Accel [g]##rg", &graphs[(int)GraphType::LongitudinalAccel].visible);
+            ImGui::PopStyleColor();
+
+            ImGui::TreePop();
+        }
         ImGui::TreePop();
     }
     // (Scaling configuration has been moved directly to individual graph tabs)
@@ -201,11 +263,46 @@ void GraphView::renderList(trackHandler* hTrack) {
     }
 
     ImGui::Separator();
+    static bool initExportNodes = true;
+    static int exportStartNode = 0;
+    static int exportEndNode = 0;
+
     if (ImGui::Button("Export Tab to CSV...##exportCsv", ImVec2(-1, 0))) {
-        auto selection = pfd::save_file("Export Plotted Curves as CSV", "graphs.csv", {"CSV Files", "*.csv"}).result();
-        if (!selection.empty()) {
-            exportToCSV(selection, hTrack);
+        ImGui::OpenPopup("ExportCSVSettingsPopup");
+        initExportNodes = true;
+    }
+
+    if (ImGui::BeginPopupModal("ExportCSVSettingsPopup", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+        int totalNodes = hTrack->trackData->getNumPoints();
+        if (initExportNodes) {
+            exportStartNode = 0;
+            exportEndNode = std::max(0, totalNodes - 1);
+            initExportNodes = false;
         }
+
+        ImGui::Text("Select Node Index Range to Export");
+        ImGui::Separator();
+
+        ImGui::Text("Total track nodes: %d", totalNodes);
+        ImGui::SliderInt("Start Node", &exportStartNode, 0, std::max(0, totalNodes - 1));
+        ImGui::SliderInt("End Node", &exportEndNode, exportStartNode, std::max(0, totalNodes - 1));
+
+        ImGui::Separator();
+
+        if (ImGui::Button("Export...", ImVec2(120, 0))) {
+            auto selection = pfd::save_file("Export Plotted Curves as CSV", "graphs.csv", {"CSV Files", "*.csv"}).result();
+            if (!selection.empty()) {
+                exportToCSV(selection, hTrack, exportStartNode, exportEndNode);
+                initExportNodes = true;
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            initExportNodes = true;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
     }
 }
 
@@ -268,17 +365,191 @@ void GraphView::renderPlot(trackHandler* hTrack) {
 
     renderTimeline(hTrack);
 
-    ImGui::Checkbox("Auto-Scale Y", &autoScaleYEdit);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
+
+    // Group 1: Edit Actions (Align Start / Align End)
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("Edit:");
     ImGui::SameLine();
+
+    double playheadArg = 0.0;
+    section* activeSec = hTrack->trackData->activeSection;
+    subfunc* sf = gloParent ? gloParent->selectedFunc : nullptr;
+    func* pf = sf ? sf->parent : nullptr;
+    int sfIndex = (sf && pf) ? pf->getSubfuncNumber(sf) : -1;
+
+    if (gViewport && activeSec && !activeSec->lNodes.empty()) {
+        mnode* povNode = gViewport->getPOVNode();
+        if (povNode) {
+            if (activeSec->bArgument == DISTANCE) {
+                playheadArg = povNode->fTotalLength - activeSec->lNodes.front().fTotalLength;
+            } else {
+                int secStartNodeIdx = hTrack->trackData->getNumPoints(activeSec);
+                playheadArg = (double)(gViewport->getPOVPos() - secStartNodeIdx) / F_HZ;
+            }
+        }
+    }
+
+    // 1. Align Start Button Logic
+    bool canAlignStart = false;
+    subfunc* prevSeg = nullptr;
+    if (sf && pf && sfIndex > 0 && activeSec) {
+        prevSeg = pf->funcList[sfIndex - 1];
+        if (playheadArg > prevSeg->minArgument + 1e-5 && playheadArg < sf->maxArgument - 1e-5) {
+            canAlignStart = true;
+        }
+    }
+
+    if (!canAlignStart)
+        ImGui::BeginDisabled();
+    if (ImGui::Button("Align Start")) {
+        double newPrevLen = playheadArg - prevSeg->minArgument;
+        pf->changeLength(newPrevLen, sfIndex - 1);
+
+        hTrack->trackData->requestUpdateTrack(activeSec, 0);
+        if (gApplication) {
+            gApplication->pushUndo();
+        }
+    }
+    if (canAlignStart && ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Aligns the start of the currently selected transition to the playhead position.");
+    }
+    if (!canAlignStart) {
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            if (!sf) {
+                ImGui::SetTooltip("Select a transition to align.");
+            } else if (sfIndex == 0) {
+                ImGui::SetTooltip("Cannot align the start of the first transition because it is fixed at 0.0.");
+            } else {
+                ImGui::SetTooltip("Cannot align because the playhead is before or too close to the previous transition's start.");
+            }
+        }
+    }
+
+    // 2. Align End Button Logic
+    ImGui::SameLine();
+    bool canAlignEnd = false;
+    if (sf && pf && sfIndex != -1 && activeSec) {
+        if (playheadArg > sf->minArgument + 1e-5) {
+            canAlignEnd = true;
+        }
+    }
+
+    if (!canAlignEnd)
+        ImGui::BeginDisabled();
+    if (ImGui::Button("Align End")) {
+        double newLen = playheadArg - sf->minArgument;
+        pf->changeLength(newLen, sfIndex);
+        hTrack->trackData->requestUpdateTrack(activeSec, 0);
+        if (gApplication) {
+            gApplication->pushUndo();
+        }
+    }
+    if (canAlignEnd && ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Aligns the end of the currently selected transition to the playhead position.");
+    }
+    if (!canAlignEnd) {
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            if (!sf) {
+                ImGui::SetTooltip("Select a transition to align.");
+            } else {
+                ImGui::SetTooltip("Cannot align because the playhead is before or too close to the transition's start.");
+            }
+        }
+    }
+
+    // Group 2: Playhead Controls
+    ImGui::SameLine();
+    ImGui::TextDisabled("|  Playhead:");
+    ImGui::SameLine();
+
+    bool canLock = playheadLocked || (gloParent && gloParent->selectedFunc != nullptr);
+    if (!canLock)
+        ImGui::BeginDisabled();
+    std::string lockLabel = playheadLocked ? "Unlock" : "Lock";
+    if (ImGui::Button(lockLabel.c_str())) {
+        playheadLocked = !playheadLocked;
+        if (playheadLocked) {
+            lockPlayheadToCurrentTransition(hTrack);
+        } else {
+            lockedTransition = nullptr;
+        }
+    }
+    if (canLock && ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Locks the playhead to the end of the currently selected transition so that it automatically moves as you resize the transition.");
+    }
+    if (!canLock)
+        ImGui::EndDisabled();
+    if (!playheadLocked && !canLock) {
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("Select a transition in the graphs or transition list to lock the playhead to.");
+        }
+    }
+
+    if (!autoScaleYEdit) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("  [Tip: scroll Y-axis to zoom, drag to pan]");
+    }
+
+    // Group 3: View Settings (Right Aligned if possible)
+    ImGui::SameLine();
+    float viewGroupWidth = ImGui::CalcTextSize("Reset View").x + ImGui::CalcTextSize("Options").x +
+                           ImGui::GetStyle().FramePadding.x * 4.0f + ImGui::GetStyle().ItemSpacing.x;
+
+    if (ImGui::GetContentRegionAvail().x > viewGroupWidth + 50.0f) {
+        ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - viewGroupWidth);
+    } else {
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+    }
+
     if (ImGui::Button("Reset View")) {
         ImPlot::SetNextAxesToFit();
     }
-    if (!autoScaleYEdit) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("|  Tip: Hover over any active Y-axis on the sides and use your scroll wheel to zoom, or drag to pan.");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Reset both axes of the graph viewport to fit the full curve boundaries.");
     }
 
-    section* activeSec = hTrack->trackData->activeSection;
+    ImGui::SameLine();
+    if (ImGui::Button("Options")) {
+        ImGui::OpenPopup("GraphSettingsPopup");
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Configure graph view, scaling, and helper tools.");
+    }
+
+    // Options Popover Menu
+    if (ImGui::BeginPopup("GraphSettingsPopup")) {
+        ImGui::TextDisabled("Graph Options");
+        ImGui::Separator();
+
+        ImGui::Checkbox("Auto-Scale Y", &autoScaleYEdit);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Automatically adjust the Y-axis limits of the graph to fit all plotted points.");
+        }
+
+        ImGui::Checkbox("Curve Chasing", &gloParent->mOptions->enableCurveChasing);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("When editing a transition curve in a multi-curve section, the other non-active curves in the section automatically extend or shrink to match its length.");
+        }
+
+        ImGui::Checkbox("Graph Hover Overlay", &gloParent->mOptions->graphOverlayEnabled);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Show an interactive details overlay when hovering over graph plots.");
+        }
+
+        ImGui::Checkbox("Playhead Snapping", &playheadSnappingEnabled);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Snap the playhead to the closest graph coordinates.");
+        }
+
+        ImGui::EndPopup();
+    }
+
+    ImGui::PopStyleVar();
+
     bool isForced = activeSec && activeSec->type == forced;
     bool isGeo = activeSec && (activeSec->type == geometric || activeSec->type == geometricriderlocal);
     bool isStraight = activeSec && activeSec->type == straight;
@@ -303,7 +574,7 @@ void GraphView::renderPlot(trackHandler* hTrack) {
 
     auto getUnderlyingType = [&](int editType) {
         if (editType == (int)GraphType::EditRoll)
-            return (int)GraphType::RollSpeed;
+            return (int)GraphType::RollRate;
         if (editType == (int)GraphType::EditNormal) {
             if (isGeo)
                 return (int)GraphType::PitchChange;
@@ -322,17 +593,17 @@ void GraphView::renderPlot(trackHandler* hTrack) {
             return (int)ImAxis_Y2;
         if (type == (int)GraphType::PitchChange || type == (int)GraphType::WorldPitchChange)
             return (int)ImAxis_Y4;
-        if (type == (int)GraphType::Banking || type == (int)GraphType::RollSpeed || type == (int)GraphType::RollAccel)
+        if (type == (int)GraphType::Banking || type == (int)GraphType::RollRate || type == (int)GraphType::RiderRollRate || type == (int)GraphType::RollAccel)
             return (int)ImAxis_Y1;
-        if (type == (int)GraphType::NForce || type == (int)GraphType::NForceChange || type == (int)GraphType::LForce || type == (int)GraphType::LForceChange)
-            return (int)ImAxis_Y3;
+        if (type == (int)GraphType::NForce || type == (int)GraphType::NForceChange || type == (int)GraphType::LForce || type == (int)GraphType::LForceChange || type == (int)GraphType::LongitudinalAccel)
+            return isForced ? (int)ImAxis_Y2 : (int)ImAxis_Y3;
 
         if (type == (int)GraphType::EditRoll)
             return (int)ImAxis_Y1;
         if (type == (int)GraphType::EditNormal)
-            return isGeo ? (int)ImAxis_Y4 : (int)ImAxis_Y3;
+            return isGeo ? (int)ImAxis_Y4 : (int)ImAxis_Y2;
         if (type == (int)GraphType::EditLateral)
-            return isGeo ? (int)ImAxis_Y2 : (int)ImAxis_Y3;
+            return isGeo ? (int)ImAxis_Y2 : (int)ImAxis_Y2;
 
         return (int)ImAxis_Y1;
     };
@@ -442,7 +713,7 @@ void GraphView::renderPlot(trackHandler* hTrack) {
                     for (const auto& sec : graphs[i].sections) {
                         if (sec.x.empty())
                             continue;
-                        if (!sec.isActive && (!showSectionBoundaries || !isSectionVisibleInViewport(sec)))
+                        if (!sec.isActive && !isSectionVisibleInViewport(sec))
                             continue;
                         for (double val : sec.y) {
                             updateBounds(ax, val);
@@ -470,38 +741,36 @@ void GraphView::renderPlot(trackHandler* hTrack) {
             }
         }
 
-        if (showSectionBoundaries) {
-            auto includeInactiveEditableBounds = [&](int editType) {
-                if (!graphs[editType].visible)
-                    return;
-                if ((editType == (int)GraphType::EditNormal || editType == (int)GraphType::EditLateral) && !isForced && !isGeo)
-                    return;
+        auto includeInactiveEditableBounds = [&](int editType) {
+            if (!graphs[editType].visible)
+                return;
+            if ((editType == (int)GraphType::EditNormal || editType == (int)GraphType::EditLateral) && !isForced && !isGeo)
+                return;
 
-                int underType = getUnderlyingType(editType);
-                int ax = getAxis(underType);
-                useY[getA(ax)] = true;
-                if (autoScaleYEdit) {
-                    for (const auto& secData : graphs[underType].sections) {
-                        if (secData.isActive || secData.x.empty())
-                            continue;
-                        if (isSectionVisibleInViewport(secData)) {
-                            for (double val : secData.y)
-                                updateBounds(ax, val);
-                        }
+            int underType = getUnderlyingType(editType);
+            int ax = getAxis(underType);
+            useY[getA(ax)] = true;
+            if (autoScaleYEdit) {
+                for (const auto& secData : graphs[underType].sections) {
+                    if (secData.isActive || secData.x.empty())
+                        continue;
+                    if (isSectionVisibleInViewport(secData)) {
+                        for (double val : secData.y)
+                            updateBounds(ax, val);
                     }
                 }
-            };
-            includeInactiveEditableBounds((int)GraphType::EditRoll);
-            includeInactiveEditableBounds((int)GraphType::EditNormal);
-            includeInactiveEditableBounds((int)GraphType::EditLateral);
-        }
+            }
+        };
+        includeInactiveEditableBounds((int)GraphType::EditRoll);
+        includeInactiveEditableBounds((int)GraphType::EditNormal);
+        includeInactiveEditableBounds((int)GraphType::EditLateral);
 
         bool useY1 = useY[0];
         bool useY3 = useY[1];
         bool useY4 = useY[2];
         bool useY2 = useY[3];
 
-        ImPlot::SetupAxis(ImAxis_X1, xLabel.c_str());
+        ImPlot::SetupAxis(ImAxis_X1, nullptr);
         ImPlot::SetupAxisLinks(ImAxis_X1, &linkedXMin, &linkedXMax);
 
         int activeYAxis = ImAxis_Y1;
@@ -536,7 +805,7 @@ void GraphView::renderPlot(trackHandler* hTrack) {
             if (pushCol) {
                 ImPlot::PushStyleColor(ImPlotCol_AxisText, col);
             }
-            ImPlot::SetupAxis(ax, label, flags);
+            ImPlot::SetupAxis(ax, nullptr, flags);
             if (pushCol) {
                 ImPlot::PopStyleColor();
             }
@@ -557,14 +826,26 @@ void GraphView::renderPlot(trackHandler* hTrack) {
                 }
 
                 double minAllowedMax = 0.1 + 0.02 * a;
+                double minLim = -0.1;
+                double maxLim = minAllowedMax;
                 if (final_edge < 0 || (upperBound <= minAllowedMax && lowerBound >= -0.1)) {
-                    ImPlot::SetupAxisLimits(ax, -0.1, minAllowedMax, autoScaleYEdit ? ImGuiCond_Always : ImGuiCond_Appearing);
+                    minLim = -0.1;
+                    maxLim = minAllowedMax;
                 } else if (upperBound > minAllowedMax && lowerBound >= -0.1) {
-                    ImPlot::SetupAxisLimits(ax, -0.1, upperBound, autoScaleYEdit ? ImGuiCond_Always : ImGuiCond_Appearing);
+                    minLim = -0.1;
+                    maxLim = upperBound;
                 } else if (upperBound <= minAllowedMax && lowerBound < -0.1) {
-                    ImPlot::SetupAxisLimits(ax, lowerBound, minAllowedMax, autoScaleYEdit ? ImGuiCond_Always : ImGuiCond_Appearing);
+                    minLim = lowerBound;
+                    maxLim = minAllowedMax;
                 } else {
-                    ImPlot::SetupAxisLimits(ax, lowerBound, upperBound, autoScaleYEdit ? ImGuiCond_Always : ImGuiCond_Appearing);
+                    minLim = lowerBound;
+                    maxLim = upperBound;
+                }
+                ImPlot::SetupAxisLimits(ax, minLim, maxLim, autoScaleYEdit ? ImGuiCond_Always : ImGuiCond_Appearing);
+
+                if (ax == ImAxis_Y2 || ax == ImAxis_Y3 || ax == ImAxis_Y4) {
+                    const char* const emptyLabels[] = {"", ""};
+                    ImPlot::SetupAxisTicks(ax, minLim, maxLim, 2, emptyLabels, true);
                 }
             } else {
                 ImPlot::SetupAxisLimits(ax, -1, 1, ImGuiCond_Appearing);
@@ -578,19 +859,22 @@ void GraphView::renderPlot(trackHandler* hTrack) {
             y1Flags |= ImPlotAxisFlags_NoDecorations;
         applyBounds(ImAxis_Y1, 0, "Banking", y1Flags);
 
-        ImPlotAxisFlags y2Flags = 0;
+        const char* y2Label = isForced ? "Forces (g)" : "Yaw";
+        const char* y3Label = isForced ? "Yaw" : "Forces (g)";
+
+        ImPlotAxisFlags y2Flags = ImPlotAxisFlags_Opposite;
         if (activeYAxis != ImAxis_Y2)
             y2Flags |= ImPlotAxisFlags_NoGridLines;
         if (!useY2)
             y2Flags |= ImPlotAxisFlags_NoDecorations;
-        applyBounds(ImAxis_Y2, 3, "Yaw", y2Flags);
+        applyBounds(ImAxis_Y2, 3, y2Label, y2Flags);
 
         ImPlotAxisFlags y3Flags = ImPlotAxisFlags_Opposite;
         if (activeYAxis != ImAxis_Y3)
             y3Flags |= ImPlotAxisFlags_NoGridLines;
         if (!useY3)
             y3Flags |= ImPlotAxisFlags_NoDecorations;
-        applyBounds(ImAxis_Y3, 1, "Forces (g)", y3Flags);
+        applyBounds(ImAxis_Y3, 1, y3Label, y3Flags);
 
         ImPlotAxisFlags y4Flags = ImPlotAxisFlags_Opposite;
         if (activeYAxis != ImAxis_Y4)
@@ -600,54 +884,52 @@ void GraphView::renderPlot(trackHandler* hTrack) {
         applyBounds(ImAxis_Y4, 2, "Pitch", y4Flags);
 
         // 1. Draw Inactive Sections for Editable Graphs (Ghosted)
-        if (showSectionBoundaries) {
-            auto plotInactiveEditable = [&](int editType) {
-                if (!graphs[editType].visible)
-                    return;
-                if ((editType == (int)GraphType::EditNormal || editType == (int)GraphType::EditLateral) && !isForced && !isGeo)
-                    return;
+        auto plotInactiveEditable = [&](int editType) {
+            if (!graphs[editType].visible)
+                return;
+            if ((editType == (int)GraphType::EditNormal || editType == (int)GraphType::EditLateral) && !isForced && !isGeo)
+                return;
 
-                int underType = getUnderlyingType(editType);
-                ImPlot::SetAxis(getAxis(underType));
-                for (size_t s = 0; s < graphs[underType].sections.size(); ++s) {
-                    const auto& secData = graphs[underType].sections[s];
-                    if (secData.isActive || secData.x.empty())
-                        continue;
+            int underType = getUnderlyingType(editType);
+            ImPlot::SetAxis(getAxis(underType));
+            for (size_t s = 0; s < graphs[underType].sections.size(); ++s) {
+                const auto& secData = graphs[underType].sections[s];
+                if (secData.isActive || secData.x.empty())
+                    continue;
 
-                    ImPlotSpec spec;
-                    spec.LineColor = graphs[editType].color;
-                    spec.LineColor.w = 0.5f;
-                    spec.LineWeight = 1.0f;
-                    std::string label = "##" + graphs[editType].label + "_ghost_" + std::to_string(s);
+                ImPlotSpec spec;
+                spec.LineColor = graphs[editType].color;
+                spec.LineColor.w = 0.5f;
+                spec.LineWeight = 1.0f;
+                std::string label = "##" + graphs[editType].label + "_ghost_" + std::to_string(s);
 
-                    ImPlotSpec fillSpec = spec;
-                    fillSpec.FillColor = spec.LineColor;
-                    fillSpec.FillAlpha = spec.LineColor.w * 0.3f;
-                    fillSpec.Flags |= ImPlotItemFlags_NoLegend | ImPlotItemFlags_NoFit;
-                    ImPlot::PlotShaded(label.c_str(), secData.x.data(), secData.y.data(), (int)secData.x.size(), 0.0, fillSpec);
-                    ImPlot::PlotLine(label.c_str(), secData.x.data(), secData.y.data(), (int)secData.x.size(), spec);
-                    if (!secData.x.empty()) {
-                        double xZero[2] = {secData.x.front(), secData.x.back()};
-                        double yZero[2] = {0.0, 0.0};
-                        ImPlotSpec zeroSpec = spec;
-                        zeroSpec.LineWeight = 1.0f;
-                        zeroSpec.LineColor.w *= 0.35f;
-                        zeroSpec.Flags |= ImPlotItemFlags_NoLegend | ImPlotItemFlags_NoFit;
-                        ImPlot::PlotLine("##ZeroLine", xZero, yZero, 2, zeroSpec);
-                    }
+                ImPlotSpec fillSpec = spec;
+                fillSpec.FillColor = spec.LineColor;
+                fillSpec.FillAlpha = spec.LineColor.w * 0.3f;
+                fillSpec.Flags |= ImPlotItemFlags_NoLegend | ImPlotItemFlags_NoFit;
+                ImPlot::PlotShaded(label.c_str(), secData.x.data(), secData.y.data(), (int)secData.x.size(), 0.0, fillSpec);
+                ImPlot::PlotLine(label.c_str(), secData.x.data(), secData.y.data(), (int)secData.x.size(), spec);
+                if (!secData.x.empty()) {
+                    double xZero[2] = {secData.x.front(), secData.x.back()};
+                    double yZero[2] = {0.0, 0.0};
+                    ImPlotSpec zeroSpec = spec;
+                    zeroSpec.LineWeight = 1.0f;
+                    zeroSpec.LineColor.w *= 0.35f;
+                    zeroSpec.Flags |= ImPlotItemFlags_NoLegend | ImPlotItemFlags_NoFit;
+                    ImPlot::PlotLine("##ZeroLine", xZero, yZero, 2, zeroSpec);
                 }
-            };
-            plotInactiveEditable((int)GraphType::EditRoll);
-            plotInactiveEditable((int)GraphType::EditNormal);
-            plotInactiveEditable((int)GraphType::EditLateral);
-        }
+            }
+        };
+        plotInactiveEditable((int)GraphType::EditRoll);
+        plotInactiveEditable((int)GraphType::EditNormal);
+        plotInactiveEditable((int)GraphType::EditLateral);
 
         // 2. Draw Active Sections for Editable Graphs (Solid, thick line)
         for (const auto& eg : editableGraphs) {
             if (!eg.sf || !eg.sf->parent)
                 continue;
             int editType = (int)GraphType::EditRoll;
-            std::string dLabel = "Roll Speed";
+            std::string dLabel = "Roll Rate";
             if (eg.sf->parent->type == funcPitch || eg.sf->parent->type == funcNormal) {
                 editType = (int)GraphType::EditNormal;
                 dLabel = isGeo ? "Pitch Change" : "Normal Force";
@@ -689,30 +971,44 @@ void GraphView::renderPlot(trackHandler* hTrack) {
         // 3. Draw Resulting Graphs (Solid, thinner lines)
         // (Removed: Resulting graphs are now plotted in the "Resulting Graphs" tab instead of the "Graphs" tab)
 
+        ImPlot::PushPlotClipRect();
         if (!gimbalLockRegions.empty()) {
-            ImPlot::PushPlotClipRect();
             for (const auto& region : gimbalLockRegions) {
                 ImVec2 p_min = ImPlot::PlotToPixels(region.first, ImPlot::GetPlotLimits().Y.Min);
                 ImVec2 p_max = ImPlot::PlotToPixels(region.second, ImPlot::GetPlotLimits().Y.Max);
-                ImPlot::GetPlotDrawList()->AddRectFilled(p_min, p_max, IM_COL32(255, 100, 100, 50));
+                ImPlot::GetPlotDrawList()->AddRectFilled(p_min, p_max, IM_COL32(255, 180, 50, 50));
             }
-            ImPlot::PopPlotClipRect();
         }
+        if (!radiusLimitRegions.empty()) {
+            for (const auto& region : radiusLimitRegions) {
+                ImVec2 p_min = ImPlot::PlotToPixels(region.first, ImPlot::GetPlotLimits().Y.Min);
+                ImVec2 p_max = ImPlot::PlotToPixels(region.second, ImPlot::GetPlotLimits().Y.Max);
+                ImPlot::GetPlotDrawList()->AddRectFilled(p_min, p_max, IM_COL32(255, 180, 50, 50));
+            }
+        }
+        if (!forceLimitRegions.empty()) {
+            for (const auto& region : forceLimitRegions) {
+                ImVec2 p_min = ImPlot::PlotToPixels(region.first, ImPlot::GetPlotLimits().Y.Min);
+                ImVec2 p_max = ImPlot::PlotToPixels(region.second, ImPlot::GetPlotLimits().Y.Max);
+                ImPlot::GetPlotDrawList()->AddRectFilled(p_min, p_max, IM_COL32(255, 180, 50, 50));
+            }
+        }
+        ImPlot::PopPlotClipRect();
 
-        if (showSectionBoundaries && !sectionBoundaries.empty()) {
+        if (!sectionBoundaries.empty()) {
             ImPlot::SetAxis(ImAxis_Y1);
             ImPlotSpec vspec;
             vspec.LineColor = ImVec4(0.5f, 0.5f, 0.5f, 0.5f);
             ImPlot::PlotInfLines("Sections", sectionBoundaries.data(), (int)sectionBoundaries.size(), vspec);
         }
 
-        if (showPOVMarker && gViewport) {
+        if (gViewport) {
             mnode* povNode = gViewport->getPOVNode();
             if (povNode) {
                 double x = distArg ? povNode->fTotalLength : (double)gViewport->getPOVPos() / F_HZ;
                 ImPlot::SetAxis(ImAxis_Y1);
                 ImPlotSpec pspec;
-                pspec.LineColor = ImVec4(1, 1, 1, 1);
+                pspec.LineColor = playheadLocked ? ImVec4(1.0f, 0.0f, 0.0f, 1.0f) : ((gloParent && gloParent->mOptions->theme == 1) ? ImVec4(0.0f, 0.0f, 0.0f, 1.0f) : ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
                 pspec.LineWeight = 2.0f;
                 pspec.Flags = ImPlotInfLinesFlags_None; // Vertical is default
                 ImPlot::PlotInfLines("POV", &x, 1, pspec);
@@ -728,6 +1024,39 @@ void GraphView::renderPlot(trackHandler* hTrack) {
         }
 
         if (ImPlot::IsPlotHovered()) {
+            if (gloParent && gloParent->mOptions->graphOverlayEnabled) {
+                ImPlotPoint mouse_pt = ImPlot::GetPlotMousePos();
+                int j = distArg ? hTrack->trackData->getIndexFromDist(mouse_pt.x) : (int)std::round(mouse_pt.x * F_HZ);
+                j = std::clamp(j, 0, hTrack->trackData->getNumPoints());
+                mnode* hoveredNode = hTrack->trackData->getPoint(j);
+                if (hoveredNode) {
+                    ImPlot::PushPlotClipRect();
+                    double cx = distArg ? hoveredNode->fTotalLength : (double)j / F_HZ;
+                    ImPlotSpec cxSpec;
+                    cxSpec.LineColor = ImVec4(0.8f, 0.8f, 0.8f, 0.4f);
+                    cxSpec.LineWeight = 1.0f;
+                    ImPlot::PlotInfLines("##Crosshair", &cx, 1, cxSpec);
+                    ImPlot::PopPlotClipRect();
+
+                    const auto& pt = graphProcessor.getData();
+                    if (j >= 0 && j < (int)pt.roll.size()) {
+                        ImGui::BeginTooltip();
+                        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.8f, 1.0f), "Node Index: %d", j);
+                        ImGui::Separator();
+                        ImGui::Text("Distance: %.2f m", hoveredNode->fTotalLength);
+                        ImGui::Text("Time: %.3f s", (double)j / F_HZ);
+                        ImGui::Text("Velocity: %.1f m/s (%.1f km/h)", hoveredNode->fVel, hoveredNode->fVel * 3.6);
+                        ImGui::Text("Longitudinal Accel: %.2f g", pt.longitudinalAccel[j]);
+                        ImGui::Text("Banking: %.1f deg", pt.roll[j]);
+                        ImGui::Text("Roll Rate: %.1f deg/s", pt.rollRate[j]);
+                        ImGui::Text("Rider Roll Rate: %.1f deg/s", pt.riderRollRate[j]);
+                        ImGui::Text("Normal Force: %.2f g", pt.forceNormal[j]);
+                        ImGui::Text("Lateral Force: %.2f g", pt.forceLateral[j]);
+                        ImGui::EndTooltip();
+                    }
+                }
+            }
+
             if (ImGui::IsMouseClicked(0)) {
                 ImVec2 mousePos = ImGui::GetMousePos();
                 subfunc* bestSf = nullptr;
@@ -799,8 +1128,18 @@ void GraphView::updateData(trackHandler* track) {
         measurementProcessor.update(track, graphProcessor);
 
         gimbalLockRegions.clear();
+        radiusLimitRegions.clear();
+        forceLimitRegions.clear();
+
         bool inGimbalLockRegion = false;
         double regionStart = 0.0;
+
+        bool inRadiusRegion = false;
+        double radiusRegionStart = 0.0;
+
+        bool inForceRegion = false;
+        double forceRegionStart = 0.0;
+
         int numPoints = track->trackData->getNumPoints();
         for (int i = 0; i <= numPoints; ++i) {
             mnode* node = track->trackData->getPoint(i);
@@ -808,6 +1147,8 @@ void GraphView::updateData(trackHandler* track) {
                 continue;
 
             double x = useDistance ? node->fTotalLength : (i / F_HZ);
+
+            // Gimbal lock
             if (node->nearGimbalLock && !inGimbalLockRegion) {
                 inGimbalLockRegion = true;
                 regionStart = x;
@@ -815,10 +1156,62 @@ void GraphView::updateData(trackHandler* track) {
                 inGimbalLockRegion = false;
                 gimbalLockRegions.push_back({regionStart, x});
             }
+
+            // Radius violations
+            bool isRadiusViolated = false;
+            if (track->trackData->enforceMinRadius) {
+                float minRadius = track->trackData->minRadius;
+                if (minRadius > 0.0f) {
+                    mnode* prevNode = (i > 0) ? track->trackData->getPoint(i - 1) : node;
+                    double dotProd = glm::dot(node->vDir, prevNode->vDir);
+                    double deltaThetaRad = acos(glm::clamp(dotProd, -1.0, 1.0));
+                    double ds = node->fDistFromLast;
+                    if (deltaThetaRad > 1e-7) {
+                        double physicalRadius = ds / deltaThetaRad;
+                        if (physicalRadius < minRadius) {
+                            isRadiusViolated = true;
+                        }
+                    }
+                }
+            }
+
+            if (isRadiusViolated && !inRadiusRegion) {
+                inRadiusRegion = true;
+                radiusRegionStart = x;
+            } else if (!isRadiusViolated && inRadiusRegion) {
+                inRadiusRegion = false;
+                radiusLimitRegions.push_back({radiusRegionStart, x});
+            }
+
+            // Force violations
+            bool isForceViolated = false;
+            if (track->trackData->enableForceLimits) {
+                if (node->forceNormal > track->trackData->fMaxPosNormal ||
+                    node->forceNormal < track->trackData->fMaxNegNormal ||
+                    node->forceLateral > track->trackData->fMaxLateral ||
+                    node->forceLateral < track->trackData->fMinLateral) {
+                    isForceViolated = true;
+                }
+            }
+
+            if (isForceViolated && !inForceRegion) {
+                inForceRegion = true;
+                forceRegionStart = x;
+            } else if (!isForceViolated && inForceRegion) {
+                inForceRegion = false;
+                forceLimitRegions.push_back({forceRegionStart, x});
+            }
         }
+
+        double x_end = useDistance ? track->trackData->getTotalLength() : (numPoints / F_HZ);
         if (inGimbalLockRegion) {
-            double x_end = useDistance ? track->trackData->getTotalLength() : (numPoints / F_HZ);
             gimbalLockRegions.push_back({regionStart, x_end});
+        }
+        if (inRadiusRegion) {
+            radiusLimitRegions.push_back({radiusRegionStart, x_end});
+        }
+        if (inForceRegion) {
+            forceLimitRegions.push_back({forceRegionStart, x_end});
         }
     }
     for (int i = (int)GraphType::Banking; i < (int)GraphType::Count; i++)
@@ -835,10 +1228,34 @@ void GraphView::sampleEditable(trackHandler* hTrack) {
         return;
     bool useDistance = (sec->bArgument == 1);
     int startIdx = hTrack->trackData->getNumPoints(sec);
+    int numNodes = (int)sec->lNodes.size();
+
+    auto getNodeArg = [&](int k) -> double {
+        if (sec->type == curved) {
+            return (double)static_cast<seccurved*>(sec)->getAngles()[k];
+        } else if (useDistance) {
+            if (sec->type == geometric || sec->type == geometricriderlocal || sec->type == forced) {
+                double h_offset = sec->lNodes[k].fTotalHeartLength - sec->lNodes[0].fTotalHeartLength;
+                double h_total = sec->lNodes.back().fTotalHeartLength - sec->lNodes[0].fTotalHeartLength;
+                double r_total = sec->length;
+                double dist_projected = h_offset;
+                if (h_total > 1e-6) {
+                    dist_projected = h_offset * (r_total / h_total);
+                }
+                return dist_projected;
+            } else {
+                return sec->lNodes[k].fTotalHeartLength - sec->lNodes[0].fTotalHeartLength;
+            }
+        } else {
+            return (double)k / F_HZ;
+        }
+    };
+
     double xOffset = 0;
     mnode* startNode = hTrack->trackData->getPoint(startIdx);
-    if (startNode)
-        xOffset = useDistance ? startNode->fTotalLength : (startIdx / F_HZ);
+    if (startNode) {
+        xOffset = useDistance ? startNode->fTotalLength : ((double)startIdx / F_HZ);
+    }
 
     auto sampleFunc = [&](func* f, GraphType type) {
         if (!f)
@@ -852,87 +1269,70 @@ void GraphView::sampleEditable(trackHandler* hTrack) {
             eData.sf = sf;
             eData.color = graphs[(int)type].color;
             eData.label = graphs[(int)type].label + " (Editable)##" + std::to_string((uintptr_t)sf);
-            if (sec->type == straight || sec->type == curved || sf->degree == tozero) {
-                bool wasInFunc = false;
-                for (int k = 0; k < (int)sec->lNodes.size(); ++k) {
-                    bool inFunc = sec->isInFunction(k, sf);
-                    if (inFunc || wasInFunc) {
-                        double x = useDistance ? sec->lNodes[k].fTotalLength : ((startIdx + k) / F_HZ);
-                        double y = 0.0;
-                        if (type == GraphType::EditRoll) {
-                            y = sec->lNodes[k].fRollSpeed;
-                            if (sec->bOrientation)
-                                y += std::sin(sec->lNodes[k].getPitch() * F_PI / 180.0) * sec->lNodes[k].getYawChange();
-                        } else if (type == GraphType::EditNormal) {
-                            if (sec->type == geometric)
-                                y = sec->lNodes[k].getPitchChange() / (useDistance ? std::max(0.01, sec->lNodes[k].fVel) : 1.0);
-                            else if (sec->type == geometricriderlocal) {
-                                double p_rate = 0.0;
-                                if (k > 0) {
-                                    mnode* node = &sec->lNodes[k];
-                                    mnode* prev = &sec->lNodes[k - 1];
-                                    glm::dvec3 d_diff = node->vDir - prev->vDir;
-                                    p_rate = -glm::dot(d_diff, prev->vNorm) * 180.0 / F_PI * F_HZ;
-                                } else {
-                                    p_rate = sec->normForce->getValue(useDistance ? sec->lNodes[0].fTotalLength : 0.0);
-                                    if (useDistance)
-                                        p_rate *= sec->lNodes[0].fVel;
-                                }
-                                y = p_rate / (useDistance ? std::max(0.01, sec->lNodes[k].fVel) : 1.0);
-                            } else
-                                y = sec->lNodes[k].forceNormal;
-                        } else if (type == GraphType::EditLateral) {
-                            if (sec->type == geometric)
-                                y = sec->lNodes[k].getYawChange() / (useDistance ? std::max(0.01, sec->lNodes[k].fVel) : 1.0);
-                            else if (sec->type == geometricriderlocal) {
-                                double y_rate = 0.0;
-                                if (k > 0) {
-                                    mnode* node = &sec->lNodes[k];
-                                    mnode* prev = &sec->lNodes[k - 1];
-                                    glm::dvec3 d_diff = node->vDir - prev->vDir;
-                                    y_rate = -glm::dot(d_diff, prev->vLat) * 180.0 / F_PI * F_HZ;
-                                } else {
-                                    y_rate = sec->latForce->getValue(useDistance ? sec->lNodes[0].fTotalLength : 0.0);
-                                    if (useDistance)
-                                        y_rate *= sec->lNodes[0].fVel;
-                                }
-                                y = y_rate / (useDistance ? std::max(0.01, sec->lNodes[k].fVel) : 1.0);
-                            } else
-                                y = sec->lNodes[k].forceLateral;
-                        }
 
-                        if (std::abs(y) < 1e-4)
-                            y = 0.0;
-                        eData.x.push_back(x);
-                        eData.y.push_back(y);
-
-                        if (!inFunc)
-                            break; // Added the connecting node, now stop
-                        wasInFunc = true;
-                    }
-                }
-            } else {
-                int n = 100;
-                double step = (maxArg - minArg) / (float)n;
-                for (int i = 0; i <= n; ++i) {
-                    double t = minArg + i * step;
-                    if (t > maxArg)
-                        t = maxArg;
+            for (int k = 0; k < numNodes; ++k) {
+                double t = getNodeArg(k);
+                if (t >= minArg - 1e-4 && t <= maxArg + 1e-4) {
+                    double x = useDistance ? sec->lNodes[k].fTotalLength : ((startIdx + k) / F_HZ);
                     double y = sf->getValue(t, true);
+
                     if (std::abs(y) < 1e-4)
                         y = 0.0;
-                    eData.x.push_back(xOffset + t);
+                    eData.x.push_back(x);
                     eData.y.push_back(y);
+                    eData.nodes.push_back(startIdx + k);
                 }
             }
+
+            // Append the connecting node to ensure the curve meets the next transition or section end cleanly
+            if (!eData.x.empty()) {
+                int lastNodeLocal = eData.nodes.back() - startIdx;
+                if (lastNodeLocal + 1 < numNodes) {
+                    double tNext = getNodeArg(lastNodeLocal + 1);
+                    double xNext = useDistance ? sec->lNodes[lastNodeLocal + 1].fTotalLength : ((startIdx + lastNodeLocal + 1) / F_HZ);
+                    double tNextClamped = std::clamp(tNext, minArg, maxArg);
+                    double yNext = sf->getValue(tNextClamped, true);
+                    if (std::abs(yNext) < 1e-4)
+                        yNext = 0.0;
+                    eData.x.push_back(xNext);
+                    eData.y.push_back(yNext);
+                    eData.nodes.push_back(startIdx + lastNodeLocal + 1);
+                }
+            }
+
             if (!eData.x.empty()) {
                 editableGraphs.push_back(eData);
-                int currIdx = (int)editableGraphs.size() - 1;
-                if (prevIdx >= 0 && !editableGraphs[prevIdx].x.empty()) {
-                    editableGraphs[prevIdx].x.push_back(editableGraphs[currIdx].x.front());
-                    editableGraphs[prevIdx].y.push_back(editableGraphs[currIdx].y.front());
+                prevIdx = (int)editableGraphs.size() - 1;
+            }
+
+            // If the transition extends past the simulated section length, plot the remaining part as a faint ghost line
+            if (numNodes > 1 && !(sec->type == straight || sec->type == curved || sf->degree == tozero)) {
+                double simulatedEndArg = getNodeArg(numNodes - 1);
+                if (maxArg > simulatedEndArg + 1e-4) {
+                    EditableGraphData dashedData;
+                    dashedData.sf = sf;
+                    dashedData.color = graphs[(int)type].color;
+                    dashedData.color.w *= 0.40f; // Faint ghost alpha
+                    dashedData.label = "##" + graphs[(int)type].label + " (Ghost)##" + std::to_string((uintptr_t)sf);
+
+                    int n = 30;
+                    double startT = simulatedEndArg;
+                    double step = (maxArg - startT) / (float)n;
+                    for (int i = 0; i <= n; ++i) {
+                        double t = startT + i * step;
+                        if (t > maxArg)
+                            t = maxArg;
+                        double y = sf->getValue(t, true);
+                        if (std::abs(y) < 1e-4)
+                            y = 0.0;
+
+                        double x = xOffset + t;
+                        dashedData.x.push_back(x);
+                        dashedData.y.push_back(y);
+                        dashedData.nodes.push_back(startIdx + numNodes - 1);
+                    }
+                    editableGraphs.push_back(dashedData);
                 }
-                prevIdx = currIdx;
             }
         }
     };
@@ -982,8 +1382,11 @@ void GraphView::sampleGraph(trackHandler* hTrack, GraphType type) {
                     case GraphType::Banking:
                         y = processedTrack.roll[j];
                         break;
-                    case GraphType::RollSpeed:
-                        y = processedTrack.rollSpeed[j];
+                    case GraphType::RollRate:
+                        y = processedTrack.rollRate[j];
+                        break;
+                    case GraphType::RiderRollRate:
+                        y = processedTrack.riderRollRate[j];
                         break;
                     case GraphType::RollAccel:
                         y = processedTrack.rollAccel[j] * F_HZ;
@@ -1011,7 +1414,10 @@ void GraphView::sampleGraph(trackHandler* hTrack, GraphType type) {
                         y = raw_yaw / (useDistance ? std::max(0.01, processedTrack.vel[j]) : 1.0);
                     } break;
                     case GraphType::Velocity:
-                        y = processedTrack.vel[j];
+                        y = processedTrack.vel[j] * gloParent->mOptions->getSpeedFactor();
+                        break;
+                    case GraphType::LongitudinalAccel:
+                        y = processedTrack.longitudinalAccel[j];
                         break;
                     case GraphType::WorldPitch:
                         y = processedTrack.worldPitch[j];
@@ -1030,6 +1436,7 @@ void GraphView::sampleGraph(trackHandler* hTrack, GraphType type) {
                     y = 0.0;
                 sData.x.push_back(x);
                 sData.y.push_back(y);
+                sData.nodes.push_back(j);
             }
         }
 
@@ -1040,12 +1447,34 @@ void GraphView::sampleGraph(trackHandler* hTrack, GraphType type) {
 void GraphView::renderResultingPlot(trackHandler* hTrack) {
     if (!hTrack || !hTrack->trackData)
         return;
+    section* activeSec = hTrack->trackData->activeSection;
+    bool isForced = activeSec && activeSec->type == forced;
     renderTimeline(hTrack);
 
     ImGui::Checkbox("Auto-Scale Y", &autoScaleYResult);
     ImGui::SameLine();
     if (ImGui::Button("Reset View")) {
         ImPlot::SetNextAxesToFit();
+    }
+    ImGui::SameLine();
+    bool canLock = playheadLocked || (gloParent && gloParent->selectedFunc != nullptr);
+    if (!canLock)
+        ImGui::BeginDisabled();
+    std::string lockLabel = playheadLocked ? "Unlock Playhead" : "Lock Playhead";
+    if (ImGui::Button(lockLabel.c_str())) {
+        playheadLocked = !playheadLocked;
+        if (playheadLocked) {
+            lockPlayheadToCurrentTransition(hTrack);
+        } else {
+            lockedTransition = nullptr;
+        }
+    }
+    if (!canLock)
+        ImGui::EndDisabled();
+    if (!playheadLocked && !canLock) {
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("Select a transition in the graphs or transition list to lock the playhead to.");
+        }
     }
     if (!autoScaleYResult) {
         ImGui::SameLine();
@@ -1100,10 +1529,10 @@ void GraphView::renderResultingPlot(trackHandler* hTrack) {
                 return (int)ImAxis_Y2;
             if (type == (int)GraphType::PitchChange || type == (int)GraphType::WorldPitchChange)
                 return (int)ImAxis_Y4;
-            if (type == (int)GraphType::Banking || type == (int)GraphType::RollSpeed || type == (int)GraphType::RollAccel)
+            if (type == (int)GraphType::Banking || type == (int)GraphType::RollRate || type == (int)GraphType::RiderRollRate || type == (int)GraphType::RollAccel)
                 return (int)ImAxis_Y1;
-            if (type == (int)GraphType::NForce || type == (int)GraphType::NForceChange || type == (int)GraphType::LForce || type == (int)GraphType::LForceChange)
-                return (int)ImAxis_Y3;
+            if (type == (int)GraphType::NForce || type == (int)GraphType::NForceChange || type == (int)GraphType::LForce || type == (int)GraphType::LForceChange || type == (int)GraphType::LongitudinalAccel)
+                return isForced ? (int)ImAxis_Y2 : (int)ImAxis_Y3;
             return (int)ImAxis_Y1;
         };
 
@@ -1129,7 +1558,7 @@ void GraphView::renderResultingPlot(trackHandler* hTrack) {
                 for (const auto& sec : graphs[i].sections) {
                     if (sec.x.empty())
                         continue;
-                    if (!sec.isActive && (!showSectionBoundaries || !isSectionVisibleInViewport(sec)))
+                    if (!sec.isActive && !isSectionVisibleInViewport(sec))
                         continue;
                     for (double val : sec.y) {
                         updateBounds(ax, val);
@@ -1143,14 +1572,14 @@ void GraphView::renderResultingPlot(trackHandler* hTrack) {
         bool useY4 = useY[2];
         bool useY2 = useY[3];
 
-        ImPlot::SetupAxis(ImAxis_X1, xLabel.c_str());
+        ImPlot::SetupAxis(ImAxis_X1, nullptr);
         ImPlot::SetupAxisLinks(ImAxis_X1, &linkedXMin, &linkedXMax);
 
         auto applyBounds = [&](int ax, int a, const char* label, ImPlotAxisFlags flags) {
             if (useY[a]) {
                 ImPlot::PushStyleColor(ImPlotCol_AxisText, axisColors[a]);
             }
-            ImPlot::SetupAxis(ax, label, flags);
+            ImPlot::SetupAxis(ax, nullptr, flags);
             if (useY[a]) {
                 ImPlot::PopStyleColor();
             }
@@ -1159,19 +1588,28 @@ void GraphView::renderResultingPlot(trackHandler* hTrack) {
                     double range = yMax[a] - yMin[a];
                     if (range < 0.1)
                         range = 0.1;
-                    ImPlot::SetupAxisLimits(ax, yMin[a] - range * 0.1, yMax[a] + range * 0.1, autoScaleYResult ? ImGuiCond_Always : ImGuiCond_Appearing);
+                    double minLim = yMin[a] - range * 0.1;
+                    double maxLim = yMax[a] + range * 0.1;
+                    ImPlot::SetupAxisLimits(ax, minLim, maxLim, autoScaleYResult ? ImGuiCond_Always : ImGuiCond_Appearing);
+                    if (ax == ImAxis_Y2 || ax == ImAxis_Y3 || ax == ImAxis_Y4) {
+                        const char* const emptyLabels[] = {"", ""};
+                        ImPlot::SetupAxisTicks(ax, minLim, maxLim, 2, emptyLabels, true);
+                    }
                 }
             }
         };
 
+        const char* y2Label = isForced ? "Forces (g)" : "Yaw";
+        const char* y3Label = isForced ? "Yaw" : "Forces (g)";
+
         ImPlotAxisFlags y1Flags = useY1 ? ImPlotAxisFlags_None : ImPlotAxisFlags_NoDecorations;
-        ImPlotAxisFlags y2Flags = useY2 ? ImPlotAxisFlags_None : ImPlotAxisFlags_NoDecorations;
-        ImPlotAxisFlags y3Flags = useY3 ? ImPlotAxisFlags_Opposite : ImPlotAxisFlags_NoDecorations;
-        ImPlotAxisFlags y4Flags = useY4 ? ImPlotAxisFlags_Opposite : ImPlotAxisFlags_NoDecorations;
+        ImPlotAxisFlags y2Flags = ImPlotAxisFlags_Opposite | (useY2 ? ImPlotAxisFlags_None : ImPlotAxisFlags_NoDecorations);
+        ImPlotAxisFlags y3Flags = ImPlotAxisFlags_Opposite | (useY3 ? ImPlotAxisFlags_None : ImPlotAxisFlags_NoDecorations);
+        ImPlotAxisFlags y4Flags = ImPlotAxisFlags_Opposite | (useY4 ? ImPlotAxisFlags_None : ImPlotAxisFlags_NoDecorations);
 
         applyBounds(ImAxis_Y1, 0, "Banking", y1Flags);
-        applyBounds(ImAxis_Y2, 3, "Yaw", y2Flags);
-        applyBounds(ImAxis_Y3, 1, "Forces (g)", y3Flags);
+        applyBounds(ImAxis_Y2, 3, y2Label, y2Flags);
+        applyBounds(ImAxis_Y3, 1, y3Label, y3Flags);
         applyBounds(ImAxis_Y4, 2, "Pitch", y4Flags);
 
         for (int i = (int)GraphType::Banking; i < (int)GraphType::Count; i++) {
@@ -1182,8 +1620,6 @@ void GraphView::renderResultingPlot(trackHandler* hTrack) {
                 for (size_t s = 0; s < graphs[i].sections.size(); ++s) {
                     const auto& secData = graphs[i].sections[s];
                     if (secData.x.empty())
-                        continue;
-                    if (!secData.isActive && !showSectionBoundaries)
                         continue;
 
                     ImPlotSpec spec;
@@ -1210,30 +1646,44 @@ void GraphView::renderResultingPlot(trackHandler* hTrack) {
             }
         }
 
+        ImPlot::PushPlotClipRect();
         if (!gimbalLockRegions.empty()) {
-            ImPlot::PushPlotClipRect();
             for (const auto& region : gimbalLockRegions) {
                 ImVec2 p_min = ImPlot::PlotToPixels(region.first, ImPlot::GetPlotLimits().Y.Min);
                 ImVec2 p_max = ImPlot::PlotToPixels(region.second, ImPlot::GetPlotLimits().Y.Max);
-                ImPlot::GetPlotDrawList()->AddRectFilled(p_min, p_max, IM_COL32(255, 100, 100, 50));
+                ImPlot::GetPlotDrawList()->AddRectFilled(p_min, p_max, IM_COL32(255, 180, 50, 50));
             }
-            ImPlot::PopPlotClipRect();
         }
+        if (!radiusLimitRegions.empty()) {
+            for (const auto& region : radiusLimitRegions) {
+                ImVec2 p_min = ImPlot::PlotToPixels(region.first, ImPlot::GetPlotLimits().Y.Min);
+                ImVec2 p_max = ImPlot::PlotToPixels(region.second, ImPlot::GetPlotLimits().Y.Max);
+                ImPlot::GetPlotDrawList()->AddRectFilled(p_min, p_max, IM_COL32(255, 180, 50, 50));
+            }
+        }
+        if (!forceLimitRegions.empty()) {
+            for (const auto& region : forceLimitRegions) {
+                ImVec2 p_min = ImPlot::PlotToPixels(region.first, ImPlot::GetPlotLimits().Y.Min);
+                ImVec2 p_max = ImPlot::PlotToPixels(region.second, ImPlot::GetPlotLimits().Y.Max);
+                ImPlot::GetPlotDrawList()->AddRectFilled(p_min, p_max, IM_COL32(255, 180, 50, 50));
+            }
+        }
+        ImPlot::PopPlotClipRect();
 
-        if (showSectionBoundaries && !sectionBoundaries.empty()) {
+        if (!sectionBoundaries.empty()) {
             ImPlot::SetAxis(ImAxis_Y1);
             ImPlotSpec vspec;
             vspec.LineColor = ImVec4(0.5f, 0.5f, 0.5f, 0.5f);
             ImPlot::PlotInfLines("Sections", sectionBoundaries.data(), (int)sectionBoundaries.size(), vspec);
         }
 
-        if (showPOVMarker && gViewport) {
+        if (gViewport) {
             mnode* povNode = gViewport->getPOVNode();
             if (povNode) {
                 double x = distArg ? povNode->fTotalLength : (double)gViewport->getPOVPos() / F_HZ;
                 ImPlot::SetAxis(ImAxis_Y1);
                 ImPlotSpec pspec;
-                pspec.LineColor = ImVec4(1, 1, 1, 1);
+                pspec.LineColor = playheadLocked ? ImVec4(1.0f, 0.0f, 0.0f, 1.0f) : ((gloParent && gloParent->mOptions->theme == 1) ? ImVec4(0.0f, 0.0f, 0.0f, 1.0f) : ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
                 pspec.LineWeight = 2.0f;
                 pspec.Flags = ImPlotInfLinesFlags_None;
                 ImPlot::PlotInfLines("POV", &x, 1, pspec);
@@ -1243,6 +1693,41 @@ void GraphView::renderResultingPlot(trackHandler* hTrack) {
                 ImDrawList* drawList = ImPlot::GetPlotDrawList();
                 drawList->AddCircleFilled(pt, 4.0f, IM_COL32(0, 0, 0, 255));
                 ImPlot::PopPlotClipRect();
+            }
+        }
+
+        if (ImPlot::IsPlotHovered()) {
+            if (gloParent && gloParent->mOptions->graphOverlayEnabled) {
+                ImPlotPoint mouse_pt = ImPlot::GetPlotMousePos();
+                int j = distArg ? hTrack->trackData->getIndexFromDist(mouse_pt.x) : (int)std::round(mouse_pt.x * F_HZ);
+                j = std::clamp(j, 0, hTrack->trackData->getNumPoints());
+                mnode* hoveredNode = hTrack->trackData->getPoint(j);
+                if (hoveredNode) {
+                    ImPlot::PushPlotClipRect();
+                    double cx = distArg ? hoveredNode->fTotalLength : (double)j / F_HZ;
+                    ImPlotSpec cxSpec;
+                    cxSpec.LineColor = ImVec4(0.8f, 0.8f, 0.8f, 0.4f);
+                    cxSpec.LineWeight = 1.0f;
+                    ImPlot::PlotInfLines("##Crosshair", &cx, 1, cxSpec);
+                    ImPlot::PopPlotClipRect();
+
+                    const auto& pt = graphProcessor.getData();
+                    if (j >= 0 && j < (int)pt.roll.size()) {
+                        ImGui::BeginTooltip();
+                        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.8f, 1.0f), "Node Index: %d", j);
+                        ImGui::Separator();
+                        ImGui::Text("Distance: %.2f m", hoveredNode->fTotalLength);
+                        ImGui::Text("Time: %.3f s", (double)j / F_HZ);
+                        ImGui::Text("Velocity: %.1f m/s (%.1f km/h)", hoveredNode->fVel, hoveredNode->fVel * 3.6);
+                        ImGui::Text("Longitudinal Accel: %.2f g", pt.longitudinalAccel[j]);
+                        ImGui::Text("Banking: %.1f deg", pt.roll[j]);
+                        ImGui::Text("Roll Rate: %.1f deg/s", pt.rollRate[j]);
+                        ImGui::Text("Rider Roll Rate: %.1f deg/s", pt.riderRollRate[j]);
+                        ImGui::Text("Normal Force: %.2f g", pt.forceNormal[j]);
+                        ImGui::Text("Lateral Force: %.2f g", pt.forceLateral[j]);
+                        ImGui::EndTooltip();
+                    }
+                }
             }
         }
 
@@ -1272,6 +1757,26 @@ void GraphView::renderMeasurementPlot(trackHandler* hTrack) {
     ImGui::SameLine();
     if (ImGui::Button("Reset View")) {
         ImPlot::SetNextAxesToFit();
+    }
+    ImGui::SameLine();
+    bool canLock = playheadLocked || (gloParent && gloParent->selectedFunc != nullptr);
+    if (!canLock)
+        ImGui::BeginDisabled();
+    std::string lockLabel = playheadLocked ? "Unlock Playhead" : "Lock Playhead";
+    if (ImGui::Button(lockLabel.c_str())) {
+        playheadLocked = !playheadLocked;
+        if (playheadLocked) {
+            lockPlayheadToCurrentTransition(hTrack);
+        } else {
+            lockedTransition = nullptr;
+        }
+    }
+    if (!canLock)
+        ImGui::EndDisabled();
+    if (!playheadLocked && !canLock) {
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("Select a transition in the graphs or transition list to lock the playhead to.");
+        }
     }
     if (!autoScaleYMeasure) {
         ImGui::SameLine();
@@ -1320,12 +1825,12 @@ void GraphView::renderMeasurementPlot(trackHandler* hTrack) {
         if (showAnyNormal) {
             if (ImPlot::BeginPlot("##NormalSubplot", ImVec2(-1, 0), ImPlotFlags_NoTitle | ImPlotFlags_NoLegend)) {
                 if (showAnyLateral) {
-                    ImPlot::SetupAxis(ImAxis_X1, "", ImPlotAxisFlags_NoTickLabels);
+                    ImPlot::SetupAxis(ImAxis_X1, nullptr, ImPlotAxisFlags_NoTickLabels);
                 } else {
-                    ImPlot::SetupAxis(ImAxis_X1, xLabel.c_str());
+                    ImPlot::SetupAxis(ImAxis_X1, nullptr);
                 }
                 ImPlot::SetupAxisLinks(ImAxis_X1, &linkedXMin, &linkedXMax);
-                ImPlot::SetupAxis(ImAxis_Y1, "Norm. Force (g)");
+                ImPlot::SetupAxis(ImAxis_Y1, nullptr);
 
                 if (true) {
                     double minBound = 1e9, maxBound = -1e9;
@@ -1383,13 +1888,13 @@ void GraphView::renderMeasurementPlot(trackHandler* hTrack) {
                     }
                 }
 
-                if (showPOVMarker && gViewport) {
+                if (gViewport) {
                     mnode* povNode = gViewport->getPOVNode();
                     if (povNode) {
                         double x = distArg ? povNode->fTotalLength : (double)gViewport->getPOVPos() / F_HZ;
                         ImPlot::SetAxis(ImAxis_Y1);
                         ImPlotSpec pspec;
-                        pspec.LineColor = ImVec4(1, 1, 1, 1);
+                        pspec.LineColor = playheadLocked ? ImVec4(1.0f, 0.0f, 0.0f, 1.0f) : ((gloParent && gloParent->mOptions->theme == 1) ? ImVec4(0.0f, 0.0f, 0.0f, 1.0f) : ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
                         pspec.LineWeight = 2.0f;
                         pspec.Flags = ImPlotInfLinesFlags_None;
                         ImPlot::PlotInfLines("POV", &x, 1, pspec);
@@ -1402,21 +1907,27 @@ void GraphView::renderMeasurementPlot(trackHandler* hTrack) {
                     }
                 }
 
-                if (showSectionBoundaries && !sectionBoundaries.empty()) {
+                if (!sectionBoundaries.empty()) {
                     ImPlot::SetAxis(ImAxis_Y1);
                     ImPlotSpec vspec;
                     vspec.LineColor = ImVec4(0.5f, 0.5f, 0.5f, 0.5f);
                     ImPlot::PlotInfLines("Sections", sectionBoundaries.data(), (int)sectionBoundaries.size(), vspec);
                 }
+
+                ImVec2 plotPos = ImPlot::GetPlotPos();
+                ImVec4 labelCol = ImGui::GetStyle().Colors[ImGuiCol_Text];
+                labelCol.w *= 0.7f;
+                ImPlot::GetPlotDrawList()->AddText(ImVec2(plotPos.x + 10.0f, plotPos.y + 10.0f), ImGui::GetColorU32(labelCol), "Normal Force");
+
                 ImPlot::EndPlot();
             }
         }
 
         if (showAnyLateral) {
             if (ImPlot::BeginPlot("##LateralSubplot", ImVec2(-1, 0), ImPlotFlags_NoTitle | ImPlotFlags_NoLegend)) {
-                ImPlot::SetupAxis(ImAxis_X1, xLabel.c_str());
+                ImPlot::SetupAxis(ImAxis_X1, nullptr);
                 ImPlot::SetupAxisLinks(ImAxis_X1, &linkedXMin, &linkedXMax);
-                ImPlot::SetupAxis(ImAxis_Y1, "Lat. Force (g)");
+                ImPlot::SetupAxis(ImAxis_Y1, nullptr);
 
                 if (true) {
                     double minBound = 1e9, maxBound = -1e9;
@@ -1474,13 +1985,13 @@ void GraphView::renderMeasurementPlot(trackHandler* hTrack) {
                     }
                 }
 
-                if (showPOVMarker && gViewport) {
+                if (gViewport) {
                     mnode* povNode = gViewport->getPOVNode();
                     if (povNode) {
                         double x = distArg ? povNode->fTotalLength : (double)gViewport->getPOVPos() / F_HZ;
                         ImPlot::SetAxis(ImAxis_Y1);
                         ImPlotSpec pspec;
-                        pspec.LineColor = ImVec4(1, 1, 1, 1);
+                        pspec.LineColor = playheadLocked ? ImVec4(1.0f, 0.0f, 0.0f, 1.0f) : ((gloParent && gloParent->mOptions->theme == 1) ? ImVec4(0.0f, 0.0f, 0.0f, 1.0f) : ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
                         pspec.LineWeight = 2.0f;
                         pspec.Flags = ImPlotInfLinesFlags_None;
                         ImPlot::PlotInfLines("POV", &x, 1, pspec);
@@ -1493,12 +2004,18 @@ void GraphView::renderMeasurementPlot(trackHandler* hTrack) {
                     }
                 }
 
-                if (showSectionBoundaries && !sectionBoundaries.empty()) {
+                if (!sectionBoundaries.empty()) {
                     ImPlot::SetAxis(ImAxis_Y1);
                     ImPlotSpec vspec;
                     vspec.LineColor = ImVec4(0.5f, 0.5f, 0.5f, 0.5f);
                     ImPlot::PlotInfLines("Sections", sectionBoundaries.data(), (int)sectionBoundaries.size(), vspec);
                 }
+
+                ImVec2 plotPos = ImPlot::GetPlotPos();
+                ImVec4 labelCol = ImGui::GetStyle().Colors[ImGuiCol_Text];
+                labelCol.w *= 0.7f;
+                ImPlot::GetPlotDrawList()->AddText(ImVec2(plotPos.x + 10.0f, plotPos.y + 10.0f), ImGui::GetColorU32(labelCol), "Lateral Force");
+
                 ImPlot::EndPlot();
             }
         }
@@ -1512,6 +2029,56 @@ void GraphView::renderMeasurementPlot(trackHandler* hTrack) {
 void GraphView::renderTimeline(trackHandler* hTrack) {
     if (!hTrack || !hTrack->trackData || !gViewport)
         return;
+
+    if (playheadLocked) {
+        if (lockedTransition) {
+            bool transitionExists = false;
+            func* parentFunc = lockedTransition->parent;
+            if (parentFunc) {
+                for (subfunc* sf : parentFunc->funcList) {
+                    if (sf == lockedTransition) {
+                        transitionExists = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!transitionExists) {
+                // Transition was deleted! Release the lock!
+                playheadLocked = false;
+                lockedTransition = nullptr;
+            } else {
+                // Update playhead position to match the end of the transition (maxArgument)!
+                section* secParent = parentFunc->secParent;
+                if (secParent && !secParent->lNodes.empty()) {
+                    double endArg = lockedTransition->maxArgument;
+
+                    int localNodeIdx = 0;
+                    if (secParent->bArgument == DISTANCE) {
+                        double targetDist = secParent->lNodes.front().fTotalLength + endArg;
+                        double minDiff = 1e9;
+                        for (size_t j = 0; j < secParent->lNodes.size(); ++j) {
+                            double diff = std::abs(secParent->lNodes[j].fTotalLength - targetDist);
+                            if (diff < minDiff) {
+                                minDiff = diff;
+                                localNodeIdx = (int)j;
+                            }
+                        }
+                    } else {
+                        localNodeIdx = (int)(endArg * F_HZ + 0.5);
+                        if (localNodeIdx >= (int)secParent->lNodes.size()) {
+                            localNodeIdx = (int)secParent->lNodes.size() - 1;
+                        }
+                    }
+
+                    int secStartNodeIdx = hTrack->trackData->getNumPoints(secParent);
+                    lockedPOVPos = secStartNodeIdx + localNodeIdx;
+                }
+            }
+        }
+        gViewport->setPOVPos(lockedPOVPos);
+        povAccumulator = (float)lockedPOVPos;
+    }
 
     const auto& processedTrack = graphProcessor.getData();
 
@@ -1539,30 +2106,39 @@ void GraphView::renderTimeline(trackHandler* hTrack) {
             }
         }
 
-        if (shouldSnap) {
+        if (shouldSnap && playheadSnappingEnabled && !playheadLocked) {
             selectedSubfunc = gloParent->selectedFunc;
             if (selectedSubfunc) {
                 lastSelectedMinArg = selectedSubfunc->minArgument;
                 lastSelectedMaxArg = selectedSubfunc->maxArgument;
-                if (selectedSubfunc->parent && selectedSubfunc->parent->secParent && selectedSubfunc->parent->secParent->parent == hTrack->trackData) {
+
+                bool snapped = false;
+                for (const auto& eg : editableGraphs) {
+                    if (eg.sf == selectedSubfunc && !eg.nodes.empty()) {
+                        int targetIdx = eg.nodes.back();
+                        gViewport->setPOVPos(targetIdx);
+                        povAccumulator = (float)targetIdx;
+                        snapped = true;
+                        break;
+                    }
+                }
+
+                if (!snapped && selectedSubfunc->parent && selectedSubfunc->parent->secParent && selectedSubfunc->parent->secParent->parent == hTrack->trackData) {
                     section* sec = selectedSubfunc->parent->secParent;
                     track* t = hTrack->trackData;
-                    int startIdx = t->getNumPoints(sec);
-                    int targetIdx = startIdx;
-
-                    bool found = false;
-                    for (int k = 0; k < (int)sec->lNodes.size(); ++k) {
-                        if (sec->isInFunction(k, selectedSubfunc)) {
-                            targetIdx = startIdx + k;
-                            found = true;
-                        } else if (found) {
-                            break;
-                        }
-                    }
-
+                    int targetIdx = t->getNumPoints(sec) + (int)sec->lNodes.size() - 1;
                     gViewport->setPOVPos(targetIdx);
                     povAccumulator = (float)targetIdx;
                 }
+            } else {
+                lastSelectedMaxArg = -1.0;
+            }
+        } else if (shouldSnap) {
+            // Keep selectedSubfunc and track parameters synchronized even when snapping is disabled
+            selectedSubfunc = gloParent->selectedFunc;
+            if (selectedSubfunc) {
+                lastSelectedMinArg = selectedSubfunc->minArgument;
+                lastSelectedMaxArg = selectedSubfunc->maxArgument;
             } else {
                 lastSelectedMaxArg = -1.0;
             }
@@ -1577,7 +2153,7 @@ void GraphView::renderTimeline(trackHandler* hTrack) {
 
         int maxPoints = hTrack->trackData->getNumPoints();
         if (maxPoints > 0) {
-            if (isPlayingPOV) {
+            if (isPlayingPOV && !playheadLocked) {
                 float speed = F_HZ; // Real-time nodes per second (matches simulation sample rate)
                 if (ImGui::IsKeyDown(ImGuiKey_LeftShift) || ImGui::IsKeyDown(ImGuiKey_RightShift)) {
                     speed *= gloParent->mOptions->sprintMultiplier;
@@ -1621,7 +2197,7 @@ void GraphView::renderTimeline(trackHandler* hTrack) {
                             v_ratio_sq = v_ratio * v_ratio;
                         }
 
-                        double w_roll = (processedTrack.rollSpeed[searchIdx] * F_PI / 180.0) * v_ratio;
+                        double w_roll = (processedTrack.rollRate[searchIdx] * F_PI / 180.0) * v_ratio;
                         double w_pitch = (processedTrack.pitchChange[searchIdx] * F_PI / 180.0) * v_ratio;
                         double w_yaw = (processedTrack.yawChange[searchIdx] * F_PI / 180.0) * v_ratio;
 
@@ -1754,7 +2330,7 @@ void GraphView::renderTimeline(trackHandler* hTrack) {
             }
         }
 
-        if (step != 0) {
+        if (step != 0 && !playheadLocked) {
             povPos = std::clamp(povPos + step, 0, maxPoints);
             gViewport->setPOVPos(povPos);
             povAccumulator = (float)povPos;
@@ -1762,7 +2338,7 @@ void GraphView::renderTimeline(trackHandler* hTrack) {
     }
 }
 
-void GraphView::exportToCSV(const std::string& filepath, trackHandler* hTrack) {
+void GraphView::exportToCSV(const std::string& filepath, trackHandler* hTrack, int startNodeIdx, int endNodeIdx) {
     if (!hTrack || !hTrack->trackData)
         return;
 
@@ -1806,7 +2382,7 @@ void GraphView::exportToCSV(const std::string& filepath, trackHandler* hTrack) {
             fout << ",";
         std::string label = "";
         if (idx == (int)GraphType::EditRoll) {
-            label = "Roll Speed";
+            label = "Roll Rate";
         } else if (idx == (int)GraphType::EditNormal) {
             label = isGeo ? "Pitch Change" : "Normal Force";
         } else if (idx == (int)GraphType::EditLateral) {
@@ -1829,8 +2405,13 @@ void GraphView::exportToCSV(const std::string& filepath, trackHandler* hTrack) {
         std::vector<double> x_vals;
         std::vector<double> y_vals;
         for (const auto& secData : graphs[idx].sections) {
-            x_vals.insert(x_vals.end(), secData.x.begin(), secData.x.end());
-            y_vals.insert(y_vals.end(), secData.y.begin(), secData.y.end());
+            for (size_t p = 0; p < secData.x.size(); ++p) {
+                int nIdx = secData.nodes[p];
+                if (nIdx >= startNodeIdx && nIdx <= endNodeIdx) {
+                    x_vals.push_back(secData.x[p]);
+                    y_vals.push_back(secData.y[p]);
+                }
+            }
         }
         maxRows = std::max(maxRows, x_vals.size());
         col_X.push_back(x_vals);
@@ -1851,8 +2432,13 @@ void GraphView::exportToCSV(const std::string& filepath, trackHandler* hTrack) {
                 }
             }
             if (editType == idx) {
-                x_vals.insert(x_vals.end(), eg.x.begin(), eg.x.end());
-                y_vals.insert(y_vals.end(), eg.y.begin(), eg.y.end());
+                for (size_t p = 0; p < eg.x.size(); ++p) {
+                    int nIdx = eg.nodes[p];
+                    if (nIdx >= startNodeIdx && nIdx <= endNodeIdx) {
+                        x_vals.push_back(eg.x[p]);
+                        y_vals.push_back(eg.y[p]);
+                    }
+                }
             }
         }
         maxRows = std::max(maxRows, x_vals.size());

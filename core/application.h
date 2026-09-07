@@ -19,6 +19,9 @@
 
 #pragma once
 
+class Application;
+extern Application* gApplication;
+
 #include "core/dummies.h"
 #include "renderer/viewport.h"
 #include "ui/graphview.h"
@@ -69,6 +72,7 @@ public:
     // Application State
     std::vector<trackHandler*> trackList;
     int activeTrackIdx = -1;
+    std::vector<bool> offsetSelections;
     GlobalUndoHandler* mUndoHandler = nullptr;
 
     void pushUndo() {
@@ -76,9 +80,16 @@ public:
             mUndoHandler->pushSnapshot();
     }
 
+    void forkTrack(trackHandler* sourceTrack, int nodeIdx);
+    void importReferenceTrack(const std::string& path);
+
 private:
     void Update(float deltaTime);
     void Render(float deltaTime);
+    void RenderTrainGeneratorWindow();
+    void RenderMeasurementPointsWindow();
+    void RenderParametricTrackEditorWindow();
+    void RenderEnvironmentWindow();
     void HandleShortcuts();
     void PerformExport(const std::string& path);
     void PerformIncrementalSave();
@@ -90,8 +101,22 @@ private:
     VulkanContext vulkanContext;
 
     std::string currentFilePath = "";
+    std::vector<std::string> recentFiles;
+    void loadRecentFiles();
+    void saveRecentFiles();
+    void addRecentFile(const std::string& path);
+    void clearRecentFiles();
+    void loadProjectFile(const std::string& path);
+    std::string notificationMessage;
+    float notificationTimer = 0.0f;
+    void showInAppNotification(const std::string& msg);
     bool firstFrame = true;
+    bool forceResetLayout = false;
     bool showOptions = false;
+    bool showTrainGenerator = false;
+    bool showMeasurementPoints = false;
+    bool showParametricTrackEditor = false;
+    bool showEnvironmentWindow = false;
     bool showAboutDialog = false;
     bool showExitPopup = false;
     bool viewportActive = false;
@@ -100,10 +125,10 @@ private:
     bool showExportPopup = false;
     int exportFormat = 1; // NL2 CSV
     float exportDistPerNode = 1.0f;
-    float exportRollThresh = 30.0f;
     int exportFromSection = 0;
     int exportToSection = -1;
-    bool exportNoHeartline = false;
+    bool exportHeartline = false;
+    std::string exportNumFormat = "%.6f";
     std::string lastExportPath = "";
 
     // UI Components
