@@ -22,6 +22,7 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <iomanip>
 #include <sstream>
 #include <glm/glm.hpp>
 #include <imgui.h>
@@ -39,7 +40,7 @@ struct DummyOptions {
     bool enforceMinRadius = false;
     float minRadius = 5.0f;
     glm::vec3 backgroundColor = glm::vec3(80.f / 255.f, 140.f / 255.f, 160.f / 255.f);
-    glm::vec3 floorColor = glm::vec3(1.0f, 1.0f, 1.0f);
+    glm::vec3 floorColor = glm::vec3(213.0f / 255.0f);
     int theme = 0; // 0: Dark, 1: Light, 2: Classic
     bool shadowsEnabled = true;
     bool transparentGraphs = false;
@@ -88,6 +89,9 @@ struct DummyOptions {
     glm::vec3 sunLightColor = glm::vec3(1.0f);
     float ambientLightStrength = 0.72f;
     glm::vec3 ambientLightColor = glm::vec3(1.0f);
+    bool trackTextureEnabled = true;
+    std::string skyboxName = "Solid Color";
+    float skyboxRotation = 0.0f;
     float stallSpeed = 0.1f;
     float graphSpacingLimit = 0.1f;
     float scrollCtrlIncrement = 1.0f;
@@ -181,7 +185,10 @@ struct DummyOptions {
                 << sunLightStrength << " "
                 << sunLightColor.x << " "
                 << sunLightColor.y << " "
-                << sunLightColor.z << "\n";
+                << sunLightColor.z << "\n"
+                << trackTextureEnabled << "\n"
+                << std::quoted(skyboxName) << " "
+                << skyboxRotation << "\n";
         }
     }
 
@@ -204,22 +211,28 @@ struct DummyOptions {
                 // remain valid and retain the defaults when values are absent.
                 float savedAmbientStrength;
                 glm::vec3 savedAmbientColor;
-                if (in >> savedAmbientStrength
-                       >> savedAmbientColor.x
-                       >> savedAmbientColor.y
-                       >> savedAmbientColor.z) {
+                if (in >> savedAmbientStrength >> savedAmbientColor.x >> savedAmbientColor.y >> savedAmbientColor.z) {
                     ambientLightStrength = savedAmbientStrength;
                     ambientLightColor = savedAmbientColor;
                 }
 
                 float savedSunStrength;
                 glm::vec3 savedSunColor;
-                if (in >> savedSunStrength
-                       >> savedSunColor.x
-                       >> savedSunColor.y
-                       >> savedSunColor.z) {
+                if (in >> savedSunStrength >> savedSunColor.x >> savedSunColor.y >> savedSunColor.z) {
                     sunLightStrength = savedSunStrength;
                     sunLightColor = savedSunColor;
+                }
+
+                bool savedTrackTextureEnabled;
+                if (in >> savedTrackTextureEnabled) {
+                    trackTextureEnabled = savedTrackTextureEnabled;
+
+                    std::string savedSkyboxName;
+                    float savedSkyboxRotation;
+                    if (in >> std::quoted(savedSkyboxName) >> savedSkyboxRotation) {
+                        skyboxName = savedSkyboxName;
+                        skyboxRotation = savedSkyboxRotation;
+                    }
                 }
             }
         }

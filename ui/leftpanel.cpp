@@ -34,6 +34,7 @@
 #include "common.h"
 #include <iostream>
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <glm/gtx/rotate_vector.hpp>
 
@@ -92,6 +93,12 @@ static std::string getStyleDisplayName(const std::string& fullPath) {
         return sub;
     }
     return p.filename().string();
+}
+
+static std::string lowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return value;
 }
 
 void LeftPanel::syncAnchorNode(trackHandler* hTrack) {
@@ -1267,7 +1274,60 @@ void LeftPanel::renderColorsTab(trackHandler* hTrack, Application* app) {
 }
 
 void LeftPanel::renderEnvironmentTab() {
-    if (ImGui::TreeNodeEx("Ground", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (gViewport) {
+        const std::vector<std::string>& presets = gViewport->getAvailableEnvironmentPresets();
+        const std::string& selectedPreset = gViewport->getSelectedEnvironmentPresetName();
+        std::string presetToSelect;
+        if (ImGui::BeginCombo("Environment Preset",
+                              selectedPreset.empty() ? "None" : selectedPreset.c_str())) {
+            for (const std::string& name : presets) {
+                bool selected = name == selectedPreset;
+                if (ImGui::Selectable(name.c_str(), selected))
+                    presetToSelect = name;
+                if (selected)
+                    ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        if (!presetToSelect.empty())
+            gViewport->selectEnvironmentPreset(presetToSelect);
+
+        if (ImGui::Button("Import .fvdenv...")) {
+            auto file = pfd::open_file("Import Environment", "skybox",
+                                       {"FVD Environment", "*.fvdenv", "All Files", "*"})
+                            .result();
+            if (!file.empty())
+                gViewport->loadEnvironmentPreset(file[0]);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Export .fvdenv...")) {
+            std::string suggested = gViewport->suggestedEnvironmentPresetPath();
+            std::string file = pfd::save_file("Export Environment", suggested,
+                                              {"FVD Environment", "*.fvdenv", "All Files", "*"})
+                                   .result();
+            if (!file.empty()) {
+                std::filesystem::path outputPath(file);
+                if (lowerAscii(outputPath.extension().string()) != ".fvdenv")
+                    file += ".fvdenv";
+                gViewport->saveEnvironmentPreset(file);
+            }
+        }
+    }
+
+    bool groundOpen = ImGui::TreeNodeEx("Ground", ImGuiTreeNodeFlags_DefaultOpen);
+    if (groundOpen) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##Ground")) {
+            gloParent->projectGrdTexSize = 440.0f;
+            gloParent->projectGrdHeight = 0.0f;
+            gloParent->projectGroundTex.clear();
+            gloParent->mOptions->floorColor = glm::vec3(213.0f / 255.0f);
+            if (gViewport) {
+                gViewport->setGroundTextureSize(gloParent->projectGrdTexSize);
+                gViewport->setGroundHeight(gloParent->projectGrdHeight);
+                gViewport->loadGroundTexture("");
+            }
+        }
         BEGIN_PROP_TABLE("GroundProps")
         float size = gloParent->projectGrdTexSize;
         float height = gloParent->projectGrdHeight;
@@ -1276,11 +1336,31 @@ void LeftPanel::renderEnvironmentTab() {
         PROP_ROW(
             "Ground Height", if (ImGui::DragFloat("##GrdHeight", &height, 0.1f, -1000.0f, 1000.0f, "%.1f m") || common::ValueScroll(&height, 1.0f, 0.1f)) { gloParent->projectGrdHeight = height; if (gViewport) gViewport->setGroundHeight(gloParent->projectGrdHeight); })
         PROP_ROW(
-            "Texture", if (ImGui::Button("Load...")) { auto f = pfd::open_file("Open Ground Texture", ".", {"Image Files", "*.jpg *.png *.bmp", "All Files", "*"}).result(); if (!f.empty()) { if (gViewport) { gViewport->loadGroundTexture(f[0]); gloParent->projectGroundTex = f[0]; } } })
+            "Color", if (ImGui::ColorEdit3("##FloorColor", &gloParent->mOptions->floorColor.x)) { if (gViewport) gViewport->markSceneDirty(); })
+        PROP_ROW(
+            "Texture", if (ImGui::Button("Load...")) { auto f = pfd::open_file("Open Ground Texture", ".", {"Image Files", "*.jpg *.png *.bmp", "All Files", "*"}).result(); if (!f.empty() && gViewport && gViewport->loadGroundTexture(f[0])) { gloParent->projectGroundTex = f[0]; gloParent->mOptions->floorColor = glm::vec3(1.0f); gViewport->markSceneDirty(); } })
         END_PROP_TABLE()
         ImGui::TreePop();
     }
-    if (ImGui::TreeNodeEx("Lighting & Shadows", ImGuiTreeNodeFlags_DefaultOpen)) {
+    bool lightingOpen = ImGui::TreeNodeEx("Lighting & Shadows", ImGuiTreeNodeFlags_DefaultOpen);
+    if (lightingOpen) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##Lighting")) {
+            DummyOptions* options = gloParent->mOptions;
+            options->shadowsEnabled = true;
+            options->sunLightStrength = 1.0f;
+            options->sunLightColor = glm::vec3(1.0f);
+            options->ambientLightStrength = 0.72f;
+            options->ambientLightColor = glm::vec3(1.0f);
+            options->trackTextureEnabled = true;
+            options->sunPitch = -90.0f;
+            options->sunYaw = 0.0f;
+            if (gViewport) {
+                gViewport->setShadowMode(1);
+                gViewport->setLightDirection(options->sunPitch, options->sunYaw);
+                gViewport->markSceneDirty();
+            }
+        }
         BEGIN_PROP_TABLE("ShadowProps")
         extern Viewport* gViewport;
         PROP_ROW(
@@ -1306,6 +1386,11 @@ void LeftPanel::renderEnvironmentTab() {
                     gViewport->markSceneDirty();
             })
         PROP_ROW(
+            "Track Texture", if (ImGui::Checkbox("##TrackTexture", &gloParent->mOptions->trackTextureEnabled)) {
+                if (gViewport)
+                    gViewport->markSceneDirty();
+            })
+        PROP_ROW(
             "Sun Pitch", if (ImGui::SliderFloat("##SunPitch", &gloParent->mOptions->sunPitch, -90.0f, 0.0f, "%.1f deg")) {
                 if (gViewport)
                     gViewport->setLightDirection(gloParent->mOptions->sunPitch, gloParent->mOptions->sunYaw);
@@ -1320,23 +1405,54 @@ void LeftPanel::renderEnvironmentTab() {
     }
     if (ImGui::TreeNodeEx("Skybox", ImGuiTreeNodeFlags_DefaultOpen)) {
         BEGIN_PROP_TABLE("SkyboxProps")
-        if (!gloParent->skyboxAvailable)
-            ImGui::BeginDisabled();
+        const std::vector<std::string>* skyboxes = gViewport ? &gViewport->getAvailableSkyboxes() : nullptr;
+        const char* preview = gloParent->mOptions->skyboxName.empty()
+                                  ? "None"
+                                  : gloParent->mOptions->skyboxName.c_str();
         PROP_ROW(
-            "Custom Skybox", if (ImGui::Checkbox("##SkyboxEnabled", &gloParent->mOptions->skyboxEnabled)) {
-                extern Viewport* gViewport;
-                if (gViewport)
-                    gViewport->markSceneDirty();
+            "Skybox", if (ImGui::BeginCombo("##Skybox", preview)) {
+                std::string skyboxToSelect;
+                if (skyboxes) {
+                    for (const std::string& name : *skyboxes) {
+                        bool selected = name == gloParent->mOptions->skyboxName;
+                        if (ImGui::Selectable(name.c_str(), selected))
+                            skyboxToSelect = name;
+                        if (selected)
+                            ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
+                if (!skyboxToSelect.empty() && gViewport)
+                    gViewport->selectSkybox(skyboxToSelect);
             })
+        if (gloParent->mOptions->skyboxName == "Solid Color") {
+            PROP_ROW(
+                "Color", if (ImGui::ColorEdit3("##SkyboxColor", &gloParent->mOptions->backgroundColor.x)) { if (gViewport) gViewport->markSceneDirty(); })
+        }
+        if (gloParent->mOptions->skyboxName != "Solid Color") {
+            PROP_ROW(
+                "Rotation Offset", if (ImGui::SliderFloat("##SkyboxRotation", &gloParent->mOptions->skyboxRotation, -180.0f, 180.0f, "%.1f deg")) { if (gViewport) gViewport->setSkyboxRotation(gloParent->mOptions->skyboxRotation); })
+        }
         if (!gloParent->skyboxAvailable) {
-            ImGui::EndDisabled();
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("Custom skybox requires cubemap_0.png through cubemap_5.png in the 'skybox' folder.");
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TableNextColumn();
+            ImGui::TextDisabled("Add nx/ny/nz/px/py/pz or cubemap_0..5 images to a folder inside skybox/.");
         }
         END_PROP_TABLE()
         ImGui::TreePop();
     }
-    if (ImGui::TreeNodeEx("Mist (Far Field)", ImGuiTreeNodeFlags_DefaultOpen)) {
+    bool mistOpen = ImGui::TreeNodeEx("Mist (Far Field)", ImGuiTreeNodeFlags_DefaultOpen);
+    if (mistOpen) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset##Mist")) {
+            gloParent->mOptions->mistEnabled = false;
+            gloParent->mOptions->mistNear = 100.0f;
+            gloParent->mOptions->mistFar = 270.0f;
+            gloParent->mOptions->mistColor = glm::vec3(0.5f);
+            if (gViewport)
+                gViewport->setMistColor(gloParent->mOptions->mistColor);
+        }
         BEGIN_PROP_TABLE("MistProps")
         extern Viewport* gViewport;
         PROP_ROW(

@@ -38,7 +38,7 @@ layout(set = 0, binding = 0) uniform TrackInstancedUniforms {
     int smoothAlongSpline;
     float ambientStrength;
     float sunStrength;
-    float padding0;
+    int materialEnabled;
     float padding1;
 } u;
 

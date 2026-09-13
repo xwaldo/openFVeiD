@@ -34,12 +34,15 @@ struct SkyUniforms {
     int32_t padding2;
 };
 
-struct FloorUniforms {
+struct alignas(16) FloorUniforms {
     glm::mat4 projectionMatrix;
     glm::mat4 modelMatrix;
     glm::vec4 eyePos;
     glm::vec4 floorColor;
     glm::vec4 mistColor;
+    glm::vec4 lightDir;
+    glm::vec4 ambientColor;
+    glm::vec4 sunColor;
     float floorHeight;
     float grdTexSize;
     float opacity;
@@ -48,6 +51,10 @@ struct FloorUniforms {
     int32_t mistEnabled;
     float mistNear;
     float mistFar;
+    float ambientStrength;
+    float sunStrength;
+    float padding0;
+    float padding1;
 };
 
 struct TrackUniforms {
@@ -72,7 +79,7 @@ struct TrackUniforms {
     float padding1;
 };
 
-struct TrackInstancedUniforms {
+struct alignas(16) TrackInstancedUniforms {
     glm::mat4 projectionMatrix;
     glm::mat4 modelMatrix;
     glm::mat4 anchorBase;
@@ -94,7 +101,7 @@ struct TrackInstancedUniforms {
     int32_t smoothAlongSpline;
     float ambientStrength;
     float sunStrength;
-    float padding0;
+    int32_t materialEnabled;
     float padding1;
 };
 
@@ -118,7 +125,7 @@ struct StlUniforms {
     float padding0;
 };
 
-struct SimpleShadowUniforms {
+struct alignas(16) SimpleShadowUniforms {
     glm::mat4 projectionMatrix;
     glm::mat4 modelMatrix;
     glm::mat4 anchorBase;
@@ -127,4 +134,12 @@ struct SimpleShadowUniforms {
     float heartline;
     int32_t isInstanced;
     int32_t isAsset;
+    float shadowStrength;
+    float padding0;
+    float padding1;
+    float padding2;
 };
+
+static_assert(sizeof(FloorUniforms) == 272, "FloorUniforms must match the std140 shader block");
+static_assert(sizeof(TrackInstancedUniforms) == 368, "TrackInstancedUniforms must match the std140 shader block");
+static_assert(sizeof(SimpleShadowUniforms) == 288, "SimpleShadowUniforms must match the std140 shader block");

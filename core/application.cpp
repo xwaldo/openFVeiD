@@ -271,6 +271,7 @@ void Application::Run() {
         float currentTime = (float)glfwGetTime();
         float deltaTime = currentTime - (float)lastTime;
         lastTime = currentTime;
+        viewport.update(deltaTime);
 
         double mx, my;
         glfwGetCursorPos(window, &mx, &my);

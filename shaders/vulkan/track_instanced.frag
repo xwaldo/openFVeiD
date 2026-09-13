@@ -30,7 +30,7 @@ layout(set = 0, binding = 0) uniform TrackInstancedUniforms {
     int smoothAlongSpline;
     float ambientStrength;
     float sunStrength;
-    float padding0;
+    int materialEnabled;
     float padding1;
 } u;
 
@@ -40,10 +40,9 @@ layout(set = 0, binding = 2) uniform sampler2D metalRoughnessMap;
 const float MATERIAL_TEXTURE_SCALE = 1.0;
 const float MATERIAL_NORMAL_STRENGTH = 0.6;
 const float MATERIAL_ROUGHNESS_SCALE = 1.0;
-const float MATERIAL_TEXTURE_LOD_BIAS = -1.0;
 const float MATERIAL_GRAIN_CONTRAST = 1.0;
 
-vec3 mappedNormal(vec2 materialUv) {
+vec3 mappedNormal(vec2 materialUv, vec3 tangentNormalSample) {
     vec3 geometricNormal = normalize(bNormal);
     vec3 positionDx = dFdx(bPosition.xyz);
     vec3 positionDy = dFdy(bPosition.xyz);
@@ -62,7 +61,7 @@ vec3 mappedNormal(vec2 materialUv) {
     float handedness = dot(cross(geometricNormal, tangent), rawBitangent) < 0.0 ? -1.0 : 1.0;
     vec3 bitangent = normalize(cross(geometricNormal, tangent)) * handedness;
 
-    vec3 tangentNormal = texture(metalNormalMap, materialUv, MATERIAL_TEXTURE_LOD_BIAS).xyz * 2.0 - 1.0;
+    vec3 tangentNormal = tangentNormalSample * 2.0 - 1.0;
     tangentNormal.xy *= MATERIAL_NORMAL_STRENGTH;
     return normalize(mat3(tangent, bitangent, geometricNormal) * tangentNormal);
 }
@@ -76,23 +75,27 @@ vec2 materialUvX() { return bMaterialPosition.zy * MATERIAL_TEXTURE_SCALE; }
 vec2 materialUvY() { return bMaterialPosition.xz * MATERIAL_TEXTURE_SCALE; }
 vec2 materialUvZ() { return bMaterialPosition.xy * MATERIAL_TEXTURE_SCALE; }
 
-vec3 sampleTriplanarNormalMap(vec3 weights) {
-    return texture(metalNormalMap, materialUvX(), MATERIAL_TEXTURE_LOD_BIAS).rgb * weights.x +
-           texture(metalNormalMap, materialUvY(), MATERIAL_TEXTURE_LOD_BIAS).rgb * weights.y +
-           texture(metalNormalMap, materialUvZ(), MATERIAL_TEXTURE_LOD_BIAS).rgb * weights.z;
-}
-
 float sampleTriplanarRoughness(vec3 weights) {
-    return texture(metalRoughnessMap, materialUvX(), MATERIAL_TEXTURE_LOD_BIAS).r * weights.x +
-           texture(metalRoughnessMap, materialUvY(), MATERIAL_TEXTURE_LOD_BIAS).r * weights.y +
-           texture(metalRoughnessMap, materialUvZ(), MATERIAL_TEXTURE_LOD_BIAS).r * weights.z;
+    return texture(metalRoughnessMap, materialUvX()).r * weights.x +
+           texture(metalRoughnessMap, materialUvY()).r * weights.y +
+           texture(metalRoughnessMap, materialUvZ()).r * weights.z;
 }
 
-vec3 triplanarMappedNormal(vec3 weights) {
-    vec3 normalX = mappedNormal(materialUvX());
-    vec3 normalY = mappedNormal(materialUvY());
-    vec3 normalZ = mappedNormal(materialUvZ());
+vec3 triplanarMappedNormal(vec3 weights, vec3 sampleX, vec3 sampleY, vec3 sampleZ) {
+    vec3 normalX = mappedNormal(materialUvX(), sampleX);
+    vec3 normalY = mappedNormal(materialUvY(), sampleY);
+    vec3 normalZ = mappedNormal(materialUvZ(), sampleZ);
     return normalize(normalX * weights.x + normalY * weights.y + normalZ * weights.z);
+}
+
+vec3 applyMist(vec3 colorValue) {
+    if (u.mistEnabled == 0)
+        return colorValue;
+
+    float distanceFromEye = length(bPosition.xyz);
+    float mistRange = max(u.mistFar - u.mistNear, 0.0001);
+    float mistFactor = clamp((distanceFromEye - u.mistNear) / mistRange, 0.0, 1.0);
+    return mix(colorValue, u.mistColor.rgb, mistFactor);
 }
 
 float distributionGgx(float nDotH, float roughness) {
@@ -110,16 +113,32 @@ float geometrySchlickGgx(float nDotDirection, float roughness) {
 
 void main() {
     vec3 baseColor = color;
-    vec3 projectionWeights = materialWeights();
-    vec3 normalMapSample = sampleTriplanarNormalMap(projectionWeights);
-
-    vec3 normal = triplanarMappedNormal(projectionWeights);
     vec3 lightDirection = normalize(-u.lightDir.xyz);
-    vec3 viewDirection = normalize(-bPosition.xyz);
-    vec3 halfwayDirection = normalize(lightDirection + viewDirection);
 
-    float rawNDotL = dot(normal, lightDirection);
-    float nDotL = max(rawNDotL, 0.0);
+    if (u.materialEnabled == 0) {
+        float nDotL = max(dot(normalize(bNormal), lightDirection), 0.0);
+        vec3 ambientLight = baseColor * u.ambientColor.rgb * u.ambientStrength;
+        vec3 directionalLight = baseColor * u.sunColor.rgb * u.sunStrength * nDotL * 0.5;
+        oFragColor = vec4(clamp(applyMist(ambientLight + directionalLight), 0.0, 1.0), 1.0);
+        return;
+    }
+
+    vec3 projectionWeights = materialWeights();
+    vec3 normalSampleX = texture(metalNormalMap, materialUvX()).rgb;
+    vec3 normalSampleY = texture(metalNormalMap, materialUvY()).rgb;
+    vec3 normalSampleZ = texture(metalNormalMap, materialUvZ()).rgb;
+    vec3 normalMapSample = normalSampleX * projectionWeights.x +
+                           normalSampleY * projectionWeights.y +
+                           normalSampleZ * projectionWeights.z;
+
+    vec3 normal = triplanarMappedNormal(projectionWeights, normalSampleX,
+                                        normalSampleY, normalSampleZ);
+    vec3 viewVector = -bPosition.xyz;
+    vec3 viewDirection = viewVector / max(length(viewVector), 0.0001);
+    vec3 halfwayVector = lightDirection + viewDirection;
+    vec3 halfwayDirection = halfwayVector / max(length(halfwayVector), 0.0001);
+
+    float nDotL = max(dot(normal, lightDirection), 0.0);
     float nDotV = max(dot(normal, viewDirection), 0.0);
     float nDotH = max(dot(normal, halfwayDirection), 0.0);
     float vDotH = max(dot(viewDirection, halfwayDirection), 0.0);
@@ -157,12 +176,5 @@ void main() {
                                 MATERIAL_GRAIN_CONTRAST * 0.35, 0.72, 1.28);
     finalColor *= grainLighting;
 
-    if (u.mistEnabled != 0) {
-        float distanceFromEye = length(bPosition.xyz);
-        float mistFactor = clamp((distanceFromEye - u.mistNear) /
-                                 (u.mistFar - u.mistNear), 0.0, 1.0);
-        finalColor = mix(finalColor, u.mistColor.rgb, mistFactor);
-    }
-
-    oFragColor = vec4(clamp(finalColor, 0.0, 1.0), 1.0);
+    oFragColor = vec4(clamp(applyMist(finalColor), 0.0, 1.0), 1.0);
 }
