@@ -17,6 +17,7 @@
 */
 
 #include "transitionview.h"
+#include "core/uitheme.h"
 #include "ui/targetsolver.h"
 #include "trackhandler.h"
 #include "track.h"
@@ -54,7 +55,7 @@ TransitionView::~TransitionView() {}
 void TransitionView::render(trackHandler* hTrack, subfunc* sf, Application* app) {
     bool styleIsLocked = false;
     if (styleIsLocked) {
-        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.0f, 1.0f), "Track editing is disabled while a Custom 3D Style is active.");
+        ImGui::TextColored(UiTheme::textColor(UiTheme::TextRole::Warning), "Track editing is disabled while a Custom 3D Style is active.");
         ImGui::BeginDisabled();
     }
 
@@ -407,10 +408,10 @@ void TransitionView::renderTypeSpecificProperties(trackHandler* hTrack, subfunc*
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             ImGui::AlignTextToFramePadding();
-            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Error");
+            ImGui::TextColored(UiTheme::textColor(UiTheme::TextRole::Error), "Error");
             ImGui::TableSetColumnIndex(1);
             ImGui::AlignTextToFramePadding();
-            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", sf->compileError.c_str());
+            ImGui::TextColored(UiTheme::textColor(UiTheme::TextRole::Error), "%s", sf->compileError.c_str());
         }
     }
 
@@ -600,9 +601,9 @@ void TransitionView::renderTargetSolver(trackHandler* hTrack, subfunc* sf, Appli
         if (solverHasMessage) {
             ImGui::Spacing();
             if (solverSuccess) {
-                ImGui::TextColored(ImVec4(0.3f, 0.8f, 0.3f, 1.0f), "%s", solverMessage.c_str());
+                ImGui::TextColored(UiTheme::textColor(UiTheme::TextRole::Success), "%s", solverMessage.c_str());
             } else {
-                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s", solverMessage.c_str());
+                ImGui::TextColored(UiTheme::textColor(UiTheme::TextRole::Error), "%s", solverMessage.c_str());
             }
         }
     }

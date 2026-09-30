@@ -17,6 +17,7 @@
 */
 
 #include "graphview.h"
+#include "core/uitheme.h"
 #include "application.h"
 #include "renderer/viewport.h"
 #include "trackhandler.h"
@@ -32,6 +33,32 @@
 #include <iostream>
 #include <fstream>
 #include <iomanip>
+
+namespace {
+
+struct GraphBackgroundColors {
+    ImVec4 frame;
+    ImVec4 plot;
+};
+
+ImVec4 blendOver(const ImVec4& foreground, const ImVec4& background) {
+    const float remaining = 1.0f - foreground.w;
+    return ImVec4(foreground.x * foreground.w + background.x * remaining,
+                  foreground.y * foreground.w + background.y * remaining,
+                  foreground.z * foreground.w + background.z * remaining, 1.0f);
+}
+
+GraphBackgroundColors opaqueGraphBackgroundColors() {
+    const ImPlotStyle& style = ImPlot::GetStyle();
+    const ImVec4 dock = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+    const ImVec4 originalFrame = blendOver(style.Colors[ImPlotCol_FrameBg], dock);
+    const ImVec4 plot = blendOver(style.Colors[ImPlotCol_PlotBg], originalFrame);
+    // Match the subtle child-window shade around the plot without changing the plot square itself.
+    const ImVec4 frame = blendOver(ImGui::GetStyleColorVec4(ImGuiCol_ChildBg), dock);
+    return {frame, plot};
+}
+
+} // namespace
 
 GraphView::GraphView()
     : needsUpdate(true), playheadSnappingEnabled(true), doAutoFocus(false), autoScaleYEdit(true), autoScaleYResult(true), autoScaleYMeasure(true), playheadLocked(false), lockedPOVPos(0), selectedSubfunc(nullptr), lastSelectedMinArg(-1.0), lastSelectedMaxArg(-1.0) {
@@ -365,8 +392,6 @@ void GraphView::renderPlot(trackHandler* hTrack) {
 
     renderTimeline(hTrack);
 
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
-
     // Group 1: Edit Actions (Align Start / Align End)
     ImGui::AlignTextToFramePadding();
     ImGui::TextDisabled("Edit:");
@@ -548,8 +573,6 @@ void GraphView::renderPlot(trackHandler* hTrack) {
         ImGui::EndPopup();
     }
 
-    ImGui::PopStyleVar();
-
     bool isForced = activeSec && activeSec->type == forced;
     bool isGeo = activeSec && (activeSec->type == geometric || activeSec->type == geometricriderlocal);
     bool isStraight = activeSec && activeSec->type == straight;
@@ -654,6 +677,12 @@ void GraphView::renderPlot(trackHandler* hTrack) {
     if (pushedTrans) {
         ImPlot::PushStyleColor(ImPlotCol_PlotBg, ImVec4(0, 0, 0, 0));
         ImPlot::PushStyleColor(ImPlotCol_FrameBg, ImVec4(0, 0, 0, 0));
+        ImPlot::PushStyleVar(ImPlotStyleVar_PlotBorderSize, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    } else {
+        const GraphBackgroundColors colors = opaqueGraphBackgroundColors();
+        ImPlot::PushStyleColor(ImPlotCol_PlotBg, colors.plot);
+        ImPlot::PushStyleColor(ImPlotCol_FrameBg, colors.frame);
     }
 
     bool distArg = hTrack->trackData->activeSection && hTrack->trackData->activeSection->bArgument == 1;
@@ -697,7 +726,8 @@ void GraphView::renderPlot(trackHandler* hTrack) {
                 yMax[a] = val;
         };
 
-        ImVec4 axisColors[4] = {ImVec4(1, 1, 1, 1), ImVec4(1, 1, 1, 1), ImVec4(1, 1, 1, 1), ImVec4(1, 1, 1, 1)};
+        const ImVec4 defaultAxisColor = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+        ImVec4 axisColors[4] = {defaultAxisColor, defaultAxisColor, defaultAxisColor, defaultAxisColor};
 
         for (int i = 0; i < (int)GraphType::Count; i++) {
             bool visible = isVisible(i);
@@ -775,7 +805,7 @@ void GraphView::renderPlot(trackHandler* hTrack) {
 
         int activeYAxis = ImAxis_Y1;
         bool hasActiveYAxis = false;
-        ImVec4 activeYColor = ImVec4(1, 1, 1, 1);
+        ImVec4 activeYColor = defaultAxisColor;
 
         if (gloParent && gloParent->selectedFunc && gloParent->selectedFunc->parent) {
             int type = (int)GraphType::EditRoll;
@@ -1008,7 +1038,7 @@ void GraphView::renderPlot(trackHandler* hTrack) {
                 double x = distArg ? povNode->fTotalLength : (double)gViewport->getPOVPos() / F_HZ;
                 ImPlot::SetAxis(ImAxis_Y1);
                 ImPlotSpec pspec;
-                pspec.LineColor = playheadLocked ? ImVec4(1.0f, 0.0f, 0.0f, 1.0f) : ((gloParent && gloParent->mOptions->theme == 1) ? ImVec4(0.0f, 0.0f, 0.0f, 1.0f) : ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+                pspec.LineColor = playheadLocked ? ImVec4(1.0f, 0.0f, 0.0f, 1.0f) : ImGui::GetStyleColorVec4(ImGuiCol_Text);
                 pspec.LineWeight = 2.0f;
                 pspec.Flags = ImPlotInfLinesFlags_None; // Vertical is default
                 ImPlot::PlotInfLines("POV", &x, 1, pspec);
@@ -1041,7 +1071,7 @@ void GraphView::renderPlot(trackHandler* hTrack) {
                     const auto& pt = graphProcessor.getData();
                     if (j >= 0 && j < (int)pt.roll.size()) {
                         ImGui::BeginTooltip();
-                        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.8f, 1.0f), "Node Index: %d", j);
+                        ImGui::TextColored(UiTheme::textColor(UiTheme::TextRole::Info), "Node Index: %d", j);
                         ImGui::Separator();
                         ImGui::Text("Distance: %.2f m", hoveredNode->fTotalLength);
                         ImGui::Text("Time: %.3f s", (double)j / F_HZ);
@@ -1102,7 +1132,11 @@ void GraphView::renderPlot(trackHandler* hTrack) {
         ImPlot::EndPlot();
     }
 
-    ImPlot::PopStyleColor(pushedTrans ? 4 : 2);
+    ImPlot::PopStyleColor(4);
+    if (pushedTrans) {
+        ImPlot::PopStyleVar();
+        ImGui::PopStyleVar();
+    }
     if (autoScaleYEdit)
         ImPlot::PopStyleVar();
 }
@@ -1495,6 +1529,12 @@ void GraphView::renderResultingPlot(trackHandler* hTrack) {
         ImPlot::PushStyleColor(ImPlotCol_AxisBgActive, ImVec4(0, 0, 0, 0));
         ImPlot::PushStyleColor(ImPlotCol_PlotBg, ImVec4(0, 0, 0, 0));
         ImPlot::PushStyleColor(ImPlotCol_FrameBg, ImVec4(0, 0, 0, 0));
+        ImPlot::PushStyleVar(ImPlotStyleVar_PlotBorderSize, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    } else {
+        const GraphBackgroundColors colors = opaqueGraphBackgroundColors();
+        ImPlot::PushStyleColor(ImPlotCol_PlotBg, colors.plot);
+        ImPlot::PushStyleColor(ImPlotCol_FrameBg, colors.frame);
     }
 
     if (ImPlot::BeginPlot("##ResultingGraphs", ImVec2(-1, -1), ImPlotFlags_NoTitle | ImPlotFlags_NoLegend)) {
@@ -1544,7 +1584,8 @@ void GraphView::renderResultingPlot(trackHandler* hTrack) {
                 yMax[a] = val;
         };
 
-        ImVec4 axisColors[4] = {ImVec4(1, 1, 1, 1), ImVec4(1, 1, 1, 1), ImVec4(1, 1, 1, 1), ImVec4(1, 1, 1, 1)};
+        const ImVec4 defaultAxisColor = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+        ImVec4 axisColors[4] = {defaultAxisColor, defaultAxisColor, defaultAxisColor, defaultAxisColor};
 
         for (int i = (int)GraphType::Banking; i < (int)GraphType::Count; i++) {
             if (graphs[i].visible) {
@@ -1683,7 +1724,7 @@ void GraphView::renderResultingPlot(trackHandler* hTrack) {
                 double x = distArg ? povNode->fTotalLength : (double)gViewport->getPOVPos() / F_HZ;
                 ImPlot::SetAxis(ImAxis_Y1);
                 ImPlotSpec pspec;
-                pspec.LineColor = playheadLocked ? ImVec4(1.0f, 0.0f, 0.0f, 1.0f) : ((gloParent && gloParent->mOptions->theme == 1) ? ImVec4(0.0f, 0.0f, 0.0f, 1.0f) : ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+                pspec.LineColor = playheadLocked ? ImVec4(1.0f, 0.0f, 0.0f, 1.0f) : ImGui::GetStyleColorVec4(ImGuiCol_Text);
                 pspec.LineWeight = 2.0f;
                 pspec.Flags = ImPlotInfLinesFlags_None;
                 ImPlot::PlotInfLines("POV", &x, 1, pspec);
@@ -1714,7 +1755,7 @@ void GraphView::renderResultingPlot(trackHandler* hTrack) {
                     const auto& pt = graphProcessor.getData();
                     if (j >= 0 && j < (int)pt.roll.size()) {
                         ImGui::BeginTooltip();
-                        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.8f, 1.0f), "Node Index: %d", j);
+                        ImGui::TextColored(UiTheme::textColor(UiTheme::TextRole::Info), "Node Index: %d", j);
                         ImGui::Separator();
                         ImGui::Text("Distance: %.2f m", hoveredNode->fTotalLength);
                         ImGui::Text("Time: %.3f s", (double)j / F_HZ);
@@ -1733,8 +1774,10 @@ void GraphView::renderResultingPlot(trackHandler* hTrack) {
 
         ImPlot::EndPlot();
     }
+    ImPlot::PopStyleColor(pushedTrans ? 4 : 2);
     if (pushedTrans) {
-        ImPlot::PopStyleColor(4);
+        ImPlot::PopStyleVar();
+        ImGui::PopStyleVar();
     }
 }
 
@@ -1819,6 +1862,12 @@ void GraphView::renderMeasurementPlot(trackHandler* hTrack) {
         ImPlot::PushStyleColor(ImPlotCol_AxisBgActive, ImVec4(0, 0, 0, 0));
         ImPlot::PushStyleColor(ImPlotCol_PlotBg, ImVec4(0, 0, 0, 0));
         ImPlot::PushStyleColor(ImPlotCol_FrameBg, ImVec4(0, 0, 0, 0));
+        ImPlot::PushStyleVar(ImPlotStyleVar_PlotBorderSize, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    } else {
+        const GraphBackgroundColors colors = opaqueGraphBackgroundColors();
+        ImPlot::PushStyleColor(ImPlotCol_PlotBg, colors.plot);
+        ImPlot::PushStyleColor(ImPlotCol_FrameBg, colors.frame);
     }
 
     if (ImPlot::BeginSubplots("##MeasurementSubplots", rows, 1, ImVec2(-1, -1), ImPlotSubplotFlags_LinkAllX | ImPlotSubplotFlags_NoTitle)) {
@@ -1894,7 +1943,7 @@ void GraphView::renderMeasurementPlot(trackHandler* hTrack) {
                         double x = distArg ? povNode->fTotalLength : (double)gViewport->getPOVPos() / F_HZ;
                         ImPlot::SetAxis(ImAxis_Y1);
                         ImPlotSpec pspec;
-                        pspec.LineColor = playheadLocked ? ImVec4(1.0f, 0.0f, 0.0f, 1.0f) : ((gloParent && gloParent->mOptions->theme == 1) ? ImVec4(0.0f, 0.0f, 0.0f, 1.0f) : ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+                        pspec.LineColor = playheadLocked ? ImVec4(1.0f, 0.0f, 0.0f, 1.0f) : ImGui::GetStyleColorVec4(ImGuiCol_Text);
                         pspec.LineWeight = 2.0f;
                         pspec.Flags = ImPlotInfLinesFlags_None;
                         ImPlot::PlotInfLines("POV", &x, 1, pspec);
@@ -1991,7 +2040,7 @@ void GraphView::renderMeasurementPlot(trackHandler* hTrack) {
                         double x = distArg ? povNode->fTotalLength : (double)gViewport->getPOVPos() / F_HZ;
                         ImPlot::SetAxis(ImAxis_Y1);
                         ImPlotSpec pspec;
-                        pspec.LineColor = playheadLocked ? ImVec4(1.0f, 0.0f, 0.0f, 1.0f) : ((gloParent && gloParent->mOptions->theme == 1) ? ImVec4(0.0f, 0.0f, 0.0f, 1.0f) : ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+                        pspec.LineColor = playheadLocked ? ImVec4(1.0f, 0.0f, 0.0f, 1.0f) : ImGui::GetStyleColorVec4(ImGuiCol_Text);
                         pspec.LineWeight = 2.0f;
                         pspec.Flags = ImPlotInfLinesFlags_None;
                         ImPlot::PlotInfLines("POV", &x, 1, pspec);
@@ -2021,8 +2070,10 @@ void GraphView::renderMeasurementPlot(trackHandler* hTrack) {
         }
         ImPlot::EndSubplots();
     }
+    ImPlot::PopStyleColor(pushedTrans ? 4 : 2);
     if (pushedTrans) {
-        ImPlot::PopStyleColor(4);
+        ImPlot::PopStyleVar();
+        ImGui::PopStyleVar();
     }
 }
 

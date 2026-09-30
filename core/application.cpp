@@ -20,6 +20,8 @@
 #include "core/application.h"
 #include "imgui_internal.h"
 #include "core/workingdirectory.h"
+#include "core/dockstyle.h"
+#include "core/uitheme.h"
 #include "customstyle.h"
 #include "smoothhandler.h"
 #include "core/secnlcsv.h"
@@ -61,6 +63,287 @@ static bool hasCaseInsensitiveExtension(const std::string& path, const std::stri
 }
 
 static int pendingDeleteSceneryIdx = -1;
+
+struct SemanticTextPalette {
+    ImVec4 error;
+    ImVec4 warning;
+    ImVec4 success;
+    ImVec4 info;
+};
+
+static SemanticTextPalette semanticTextColors = {
+    ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+    ImVec4(1.0f, 0.7f, 0.4f, 1.0f),
+    ImVec4(0.4f, 1.0f, 0.4f, 1.0f),
+    ImVec4(0.2f, 0.8f, 0.8f, 1.0f)
+};
+
+ImVec4 UiTheme::textColor(TextRole role) {
+    switch (role) {
+    case TextRole::Error: return semanticTextColors.error;
+    case TextRole::Warning: return semanticTextColors.warning;
+    case TextRole::Success: return semanticTextColors.success;
+    case TextRole::Info: return semanticTextColors.info;
+    }
+    return semanticTextColors.error;
+}
+
+static void setupImGuiStyle(float scale) {
+    ImGuiStyle& style = ImGui::GetStyle();
+    style = ImGuiStyle();
+
+    style.Alpha = 1.0f;
+    style.DisabledAlpha = 0.5f;
+    style.WindowPadding = ImVec2(8.0f, 8.0f);
+    style.WindowRounding = 4.0f;
+    style.WindowBorderSize = 1.0f;
+    style.WindowMinSize = ImVec2(32.0f, 32.0f);
+    style.WindowTitleAlign = ImVec2(0.0f, 0.5f);
+    style.WindowMenuButtonPosition = ImGuiDir_Left;
+    style.ChildRounding = 4.0f;
+    style.ChildBorderSize = 1.0f;
+    style.PopupRounding = 4.0f;
+    style.PopupBorderSize = 1.0f;
+    style.FramePadding = ImVec2(4.0f, 3.0f);
+    style.FrameRounding = 4.0f;
+    style.FrameBorderSize = 1.0f;
+    style.ItemSpacing = ImVec2(8.0f, 4.0f);
+    style.ItemInnerSpacing = ImVec2(4.0f, 4.0f);
+    style.CellPadding = ImVec2(4.0f, 2.0f);
+    style.IndentSpacing = 21.0f;
+    style.ColumnsMinSpacing = 6.0f;
+    style.ScrollbarSize = 10.0f;
+    style.ScrollbarRounding = 9.0f;
+    style.GrabMinSize = 10.0f;
+    style.GrabRounding = 2.0f;
+    style.TabRounding = 4.0f;
+    style.TabBorderSize = 1.0f;
+    style.TabCloseButtonMinWidthUnselected = 0.0f;
+    style.ColorButtonPosition = ImGuiDir_Right;
+    style.ButtonTextAlign = ImVec2(0.5f, 0.5f);
+    style.SelectableTextAlign = ImVec2(0.0f, 0.0f);
+
+    style.Colors[ImGuiCol_Text] = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+    style.Colors[ImGuiCol_TextDisabled] = ImVec4(0.49803922f, 0.49803922f, 0.49803922f, 1.0f);
+    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.15686275f, 0.15686275f, 0.15686275f, 1.0f);
+    style.Colors[ImGuiCol_ChildBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.09803922f);
+    style.Colors[ImGuiCol_PopupBg] = ImVec4(0.15686275f, 0.15686275f, 0.15686275f, 1.0f);
+    style.Colors[ImGuiCol_Border] = ImVec4(0.0f, 0.0f, 0.0f, 0.3882353f);
+    style.Colors[ImGuiCol_BorderShadow] = ImVec4(1e-6f, 9.9999e-7f, 9.9999e-7f, 0.0f);
+    style.Colors[ImGuiCol_FrameBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.09803922f);
+    style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.0f, 0.0f, 0.0f, 0.19607843f);
+    style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.5882353f, 0.5882353f, 0.5882353f, 0.19607843f);
+    style.Colors[ImGuiCol_TitleBg] = ImVec4(0.12156863f, 0.12156863f, 0.12156863f, 1.0f);
+    style.Colors[ImGuiCol_TitleBgActive] = style.Colors[ImGuiCol_TitleBg];
+    style.Colors[ImGuiCol_TitleBgCollapsed] = style.Colors[ImGuiCol_TitleBg];
+    style.Colors[ImGuiCol_MenuBarBg] = ImVec4(0.13725491f, 0.13725491f, 0.13725491f, 1.0f);
+    style.Colors[ImGuiCol_ScrollbarBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.09803922f);
+    style.Colors[ImGuiCol_ScrollbarGrab] = ImVec4(0.30980393f, 0.30980393f, 0.30980393f, 1.0f);
+    style.Colors[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.40784314f, 0.40784314f, 0.40784314f, 1.0f);
+    style.Colors[ImGuiCol_ScrollbarGrabActive] = ImVec4(0.50980395f, 0.50980395f, 0.50980395f, 1.0f);
+    style.Colors[ImGuiCol_CheckMark] = ImVec4(0.26f, 0.59f, 0.98f, 1.0f);
+    style.Colors[ImGuiCol_SliderGrab] = ImVec4(0.5882353f, 0.5882353f, 0.5882353f, 0.49019608f);
+    style.Colors[ImGuiCol_SliderGrabActive] = ImVec4(0.5882353f, 0.5882353f, 0.5882353f, 0.7058824f);
+    style.Colors[ImGuiCol_Button] = ImVec4(0.7f, 0.7f, 0.7f, 0.11764706f);
+    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(1.0f, 0.99999f, 0.99999f, 0.11764706f);
+    style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.58431375f, 0.58431375f, 0.58431375f, 0.39215687f);
+    style.Colors[ImGuiCol_Header] = ImVec4(0.0f, 0.0f, 0.0f, 0.09803922f);
+    style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.25882354f, 0.5882353f, 0.9764706f, 0.8f);
+    style.Colors[ImGuiCol_HeaderActive] = ImVec4(0.25882354f, 0.5882353f, 0.9764706f, 1.0f);
+    style.Colors[ImGuiCol_Separator] = ImVec4(0.0f, 0.0f, 0.0f, 0.1f);
+    style.Colors[ImGuiCol_SeparatorHovered] = ImVec4(0.09803922f, 0.4f, 0.7490196f, 0.78f);
+    style.Colors[ImGuiCol_SeparatorActive] = ImVec4(0.09803922f, 0.4f, 0.7490196f, 1.0f);
+    style.Colors[ImGuiCol_ResizeGrip] = ImVec4(0.25882354f, 0.5882353f, 0.9764706f, 0.2f);
+    style.Colors[ImGuiCol_ResizeGripHovered] = ImVec4(0.25882354f, 0.5882353f, 0.9764706f, 0.67f);
+    style.Colors[ImGuiCol_ResizeGripActive] = ImVec4(0.25882354f, 0.5882353f, 0.9764706f, 0.95f);
+    style.Colors[ImGuiCol_Tab] = style.Colors[ImGuiCol_TitleBg];
+    style.Colors[ImGuiCol_TabHovered] = ImVec4(0.43776822f, 0.43776384f, 0.43776384f, 0.527897f);
+    style.Colors[ImGuiCol_TabActive] = style.Colors[ImGuiCol_WindowBg];
+    style.Colors[ImGuiCol_TabUnfocused] = style.Colors[ImGuiCol_TitleBg];
+    style.Colors[ImGuiCol_TabUnfocusedActive] = style.Colors[ImGuiCol_WindowBg];
+    style.Colors[ImGuiCol_PlotLines] = ImVec4(0.60784316f, 0.60784316f, 0.60784316f, 1.0f);
+    style.Colors[ImGuiCol_PlotLinesHovered] = ImVec4(1.0f, 0.42745098f, 0.34901962f, 1.0f);
+    style.Colors[ImGuiCol_PlotHistogram] = ImVec4(0.8980392f, 0.69803923f, 0.0f, 1.0f);
+    style.Colors[ImGuiCol_PlotHistogramHovered] = ImVec4(1.0f, 0.6f, 0.0f, 1.0f);
+    style.Colors[ImGuiCol_TableHeaderBg] = ImVec4(0.1882353f, 0.1882353f, 0.2f, 1.0f);
+    style.Colors[ImGuiCol_TableBorderStrong] = ImVec4(0.08f, 0.08f, 0.08f, 1.0f);
+    style.Colors[ImGuiCol_TableBorderLight] = ImVec4(0.0f, 0.0f, 0.0f, 0.2);
+    style.Colors[ImGuiCol_TableRowBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+    style.Colors[ImGuiCol_TableRowBgAlt] = ImVec4(1.0f, 1.0f, 1.0f, 0.06f);
+    style.Colors[ImGuiCol_TextSelectedBg] = ImVec4(0.25882354f, 0.5882353f, 0.9764706f, 0.35f);
+    style.Colors[ImGuiCol_DragDropTarget] = ImVec4(1.0f, 1.0f, 0.0f, 0.9f);
+    style.Colors[ImGuiCol_NavHighlight] = ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
+    style.Colors[ImGuiCol_NavWindowingHighlight] = ImVec4(1.0f, 1.0f, 1.0f, 0.7f);
+    style.Colors[ImGuiCol_NavWindowingDimBg] = ImVec4(0.8f, 0.8f, 0.8f, 0.2f);
+    style.Colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.8f, 0.8f, 0.8f, 0.35f);
+
+    style.ScaleAllSizes(scale);
+}
+
+struct ThemeDefinition {
+    ImVec4 base;
+    ImVec4 text;
+    ImVec4 accent;
+    float shadeStrength;
+    bool lightDefaults;
+    void (*applyOverrides)(ImGuiStyle&, ImPlotStyle&);
+};
+
+static ImVec4 darker(const ImVec4& color, float amount) {
+    return ImVec4(ImMax(0.0f, color.x - amount), ImMax(0.0f, color.y - amount),
+                  ImMax(0.0f, color.z - amount), color.w);
+}
+
+static ImVec4 mixColor(const ImVec4& a, const ImVec4& b, float fraction) {
+    return ImVec4(a.x + (b.x - a.x) * fraction, a.y + (b.y - a.y) * fraction,
+                  a.z + (b.z - a.z) * fraction, a.w + (b.w - a.w) * fraction);
+}
+
+static void applyDerivedTheme(const ThemeDefinition& definition) {
+    // These offsets mirror the visible layers of our Dark theme (base 40/255):
+    // child 36, chrome 31, plot 27, separator 24 at shadeStrength 1.0.
+    const ImVec4 base = definition.base;
+    const auto shade = [&](float steps) { return darker(base, steps * definition.shadeStrength / 255.0f); };
+    const ImVec4 child = shade(4.0f);
+    const ImVec4 chrome = shade(9.0f);
+    const ImVec4 plotBackground = shade(13.0f);
+    const ImVec4 separator = shade(16.0f);
+    const ImVec4 popup = base;
+    const ImVec4 hover = mixColor(base, definition.accent, 0.20f);
+    const ImVec4 active = mixColor(base, definition.accent, 0.32f);
+
+    if (definition.lightDefaults)
+        ImGui::StyleColorsLight();
+    else
+        ImGui::StyleColorsDark();
+    ImGuiStyle& style = ImGui::GetStyle();
+    ImVec4* colors = style.Colors;
+    colors[ImGuiCol_Text] = definition.text;
+    colors[ImGuiCol_TextDisabled] = mixColor(definition.text, base, 0.48f);
+    colors[ImGuiCol_WindowBg] = base;
+    colors[ImGuiCol_ChildBg] = child;
+    colors[ImGuiCol_PopupBg] = popup;
+    colors[ImGuiCol_Border] = separator;
+    colors[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 0);
+    colors[ImGuiCol_FrameBg] = child;
+    colors[ImGuiCol_FrameBgHovered] = chrome;
+    colors[ImGuiCol_FrameBgActive] = shade(14.0f);
+    colors[ImGuiCol_TitleBg] = chrome;
+    colors[ImGuiCol_TitleBgActive] = chrome;
+    colors[ImGuiCol_TitleBgCollapsed] = chrome;
+    colors[ImGuiCol_MenuBarBg] = chrome;
+    colors[ImGuiCol_ScrollbarBg] = child;
+    colors[ImGuiCol_ScrollbarGrab] = shade(40.0f);
+    colors[ImGuiCol_ScrollbarGrabHovered] = shade(55.0f);
+    colors[ImGuiCol_ScrollbarGrabActive] = shade(70.0f);
+    colors[ImGuiCol_CheckMark] = definition.accent;
+    colors[ImGuiCol_SliderGrab] = shade(52.0f);
+    colors[ImGuiCol_SliderGrabActive] = definition.accent;
+    colors[ImGuiCol_Button] = shade(8.0f);
+    colors[ImGuiCol_ButtonHovered] = shade(16.0f);
+    colors[ImGuiCol_ButtonActive] = shade(25.0f);
+    colors[ImGuiCol_Header] = child;
+    colors[ImGuiCol_HeaderHovered] = hover;
+    colors[ImGuiCol_HeaderActive] = active;
+    colors[ImGuiCol_Separator] = separator;
+    colors[ImGuiCol_SeparatorHovered] = definition.accent;
+    colors[ImGuiCol_SeparatorActive] = definition.accent;
+    colors[ImGuiCol_ResizeGrip] = mixColor(base, definition.accent, 0.35f);
+    colors[ImGuiCol_ResizeGripHovered] = hover;
+    colors[ImGuiCol_ResizeGripActive] = definition.accent;
+    colors[ImGuiCol_Tab] = chrome;
+    colors[ImGuiCol_TabHovered] = hover;
+    colors[ImGuiCol_TabActive] = base;
+    colors[ImGuiCol_TabUnfocused] = chrome;
+    colors[ImGuiCol_TabUnfocusedActive] = base;
+    colors[ImGuiCol_TabSelectedOverline] = ImVec4(0, 0, 0, 0);
+    colors[ImGuiCol_TabDimmedSelectedOverline] = ImVec4(0, 0, 0, 0);
+    colors[ImGuiCol_DockingEmptyBg] = base;
+    colors[ImGuiCol_TableHeaderBg] = chrome;
+    colors[ImGuiCol_TableBorderStrong] = separator;
+    colors[ImGuiCol_TableBorderLight] = separator;
+    colors[ImGuiCol_TableRowBg] = ImVec4(0, 0, 0, 0);
+    colors[ImGuiCol_TableRowBgAlt] = child;
+    colors[ImGuiCol_TextSelectedBg] = ImVec4(definition.accent.x, definition.accent.y, definition.accent.z, 0.25f);
+    colors[ImGuiCol_NavHighlight] = definition.accent;
+    colors[ImGuiCol_PlotLines] = definition.accent;
+    colors[ImGuiCol_PlotLinesHovered] = darker(definition.accent, 0.12f);
+
+    if (definition.lightDefaults)
+        ImPlot::StyleColorsLight();
+    else
+        ImPlot::StyleColorsDark();
+    ImVec4* plotColors = ImPlot::GetStyle().Colors;
+    plotColors[ImPlotCol_FrameBg] = child;
+    plotColors[ImPlotCol_PlotBg] = plotBackground;
+    plotColors[ImPlotCol_PlotBorder] = separator;
+    plotColors[ImPlotCol_LegendBg] = popup;
+    plotColors[ImPlotCol_LegendBorder] = separator;
+    plotColors[ImPlotCol_LegendText] = definition.text;
+    plotColors[ImPlotCol_TitleText] = definition.text;
+    plotColors[ImPlotCol_InlayText] = definition.text;
+    plotColors[ImPlotCol_AxisText] = definition.text;
+    plotColors[ImPlotCol_AxisGrid] = ImVec4(definition.text.x, definition.text.y, definition.text.z, 0.20f);
+    plotColors[ImPlotCol_AxisTick] = separator;
+    plotColors[ImPlotCol_AxisBg] = ImVec4(0, 0, 0, 0);
+    plotColors[ImPlotCol_AxisBgHovered] = hover;
+    plotColors[ImPlotCol_AxisBgActive] = active;
+    plotColors[ImPlotCol_Selection] = definition.accent;
+    plotColors[ImPlotCol_Crosshairs] = definition.text;
+
+    if (definition.applyOverrides)
+        definition.applyOverrides(style, ImPlot::GetStyle());
+}
+
+static void applyLightOverrides(ImGuiStyle& style, ImPlotStyle& plot) {
+    // Individual themes can tune any ImGui/ImPlot slot after the base shades are derived.
+    style.Colors[ImGuiCol_PopupBg] = ImVec4(0.96f, 0.96f, 0.95f, 1.0f);
+    // Neutralize the plot's tint while keeping its derived shade strength.
+    const ImVec4& plotBase = plot.Colors[ImPlotCol_PlotBg];
+    const float plotGray = (plotBase.x + plotBase.y + plotBase.z) / 3.0f;
+    plot.Colors[ImPlotCol_PlotBg] = ImVec4(plotGray, plotGray, plotGray, 1.0f);
+    plot.Colors[ImPlotCol_LegendBg] = style.Colors[ImGuiCol_PopupBg];
+}
+
+static void applyTheme(int theme, float scale) {
+    setupImGuiStyle(scale); // Shared layout geometry; Dark keeps its existing colors exactly.
+    if (theme == 1) {
+        semanticTextColors = {
+            ImVec4(0.66f, 0.13f, 0.17f, 1.0f), // Error
+            ImVec4(0.54f, 0.32f, 0.06f, 1.0f), // Warning
+            ImVec4(0.10f, 0.42f, 0.19f, 1.0f), // Success
+            ImVec4(0.07f, 0.38f, 0.47f, 1.0f)  // Info
+        };
+    } else {
+        semanticTextColors = {
+            ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+            ImVec4(1.0f, 0.7f, 0.4f, 1.0f),
+            ImVec4(0.4f, 1.0f, 0.4f, 1.0f),
+            ImVec4(0.2f, 0.8f, 0.8f, 1.0f)
+        };
+    }
+    switch (theme) {
+    case 1: {
+        const ThemeDefinition light = {
+            ImVec4(0.906f, 0.910f, 0.902f, 1.0f), // Base surface
+            ImVec4(0.15f, 0.17f, 0.18f, 1.0f),    // Text
+            ImVec4(0.16f, 0.39f, 0.64f, 1.0f),    // Accent
+            2.0f,                                  // Surface shade contrast (1.0 = original steps)
+            true,
+            applyLightOverrides
+        };
+        applyDerivedTheme(light);
+        break;
+    }
+    case 2:
+        ImGui::StyleColorsClassic();
+        ImPlot::StyleColorsClassic();
+        break;
+    default:
+        ImPlot::StyleColorsDark();
+        break;
+    }
+}
 
 #ifdef _WIN32
 #define popen _popen
@@ -309,22 +592,12 @@ bool Application::Initialize() {
         io.Fonts->AddFontDefault(&font_cfg);
     }
 
-    ImGui::StyleColorsDark();
+    themeScale = currentFontSize / 15.0f;
+    gloParent->mOptions->theme = std::clamp(gloParent->mOptions->theme, 0, 2);
+    applyTheme(gloParent->mOptions->theme, themeScale);
+    appliedTheme = gloParent->mOptions->theme;
     ImGuiStyle& style = ImGui::GetStyle();
 
-    // Apply theme from options
-    if (gloParent->mOptions->theme == 0) {
-        ImGui::StyleColorsDark();
-        ImPlot::StyleColorsDark();
-    } else if (gloParent->mOptions->theme == 1) {
-        ImGui::StyleColorsLight();
-        ImPlot::StyleColorsLight();
-    } else if (gloParent->mOptions->theme == 2) {
-        ImGui::StyleColorsClassic();
-        ImPlot::StyleColorsClassic();
-    }
-
-    style.ScaleAllSizes(currentFontSize / 15.0f);
     if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
         style.WindowRounding = 0.0f;
         style.Colors[ImGuiCol_WindowBg].w = 1.0f;
@@ -446,6 +719,11 @@ void Application::Run() {
             continue;
         }
 
+        // Apply a selection from the previous frame before any ImGui windows or style stacks are active.
+        if (appliedTheme != gloParent->mOptions->theme) {
+            applyTheme(gloParent->mOptions->theme, themeScale);
+            appliedTheme = gloParent->mOptions->theme;
+        }
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
@@ -822,7 +1100,18 @@ void Application::Render(float deltaTime) {
         }
     };
 
-    if (ImGui::BeginMainMenuBar()) {
+    // Dock splitters draw Border over WindowBg; match that visible color for the main menu only.
+    const ImVec4& dockBackground = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+    const ImVec4& splitter = ImGui::GetStyleColorVec4(ImGuiCol_Border);
+    ImGui::PushStyleColor(ImGuiCol_MenuBarBg,
+                          ImVec4(dockBackground.x * (1.0f - splitter.w) + splitter.x * splitter.w,
+                                 dockBackground.y * (1.0f - splitter.w) + splitter.y * splitter.w,
+                                 dockBackground.z * (1.0f - splitter.w) + splitter.z * splitter.w, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    const bool mainMenuBarOpen = ImGui::BeginMainMenuBar();
+    ImGui::PopStyleVar(2);
+    if (mainMenuBarOpen) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("New Project")) {
                 for (auto t : trackList)
@@ -1167,12 +1456,51 @@ void Application::Render(float deltaTime) {
         }
         ImGui::EndMainMenuBar();
     }
+    ImGui::PopStyleColor();
 
     ImGuiViewport* main_viewport = ImGui::GetMainViewport();
     float statusBarHeight = ImGui::GetFrameHeight();
     main_viewport->WorkSize.y -= statusBarHeight;
 
+    // Keep the metrics band compact and fixed-height. Its internal splitter is
+    // non-resizable; the main upper/lower splitter below it moves the whole band.
+    const float metricsBarHeight = ImMax(ImGui::GetFrameHeight() + 4.0f, ImGui::GetStyle().WindowMinSize.y);
+    const float dockingSeparatorSize = ImGui::GetStyle().DockingSeparatorSize;
+    const float minimumDockChildHeight = ImMax(4.0f, dockingSeparatorSize + 2.0f);
+    if (ImGuiWindow* metricsWindow = ImGui::FindWindowByName("Metrics")) {
+        if (ImGuiDockNode* metricsNode = metricsWindow->DockNode) {
+            metricsNode->LocalFlags |= ImGuiDockNodeFlags_NoTabBar | ImGuiDockNodeFlags_NoResizeY |
+                                       ImGuiDockNodeFlags_NoDocking;
+            metricsNode->UpdateMergedFlags();
+            ImGuiDockNode* parent = metricsNode->ParentNode;
+            ImGuiDockNode* root = parent;
+            while (root && root->ParentNode)
+                root = root->ParentNode;
+            // Window snapping/minimizing can briefly make the dockspace too short
+            // for both children. ImGui's locked-size path asserts in that case.
+            const float minimumDockspaceHeight = 2.0f * minimumDockChildHeight + dockingSeparatorSize;
+            const bool canLockMetrics = parent && parent->SplitAxis == ImGuiAxis_Y &&
+                                        parent->ChildNodes[1] == metricsNode &&
+                                        parent->Size.y >= minimumDockChildHeight &&
+                                        parent->SizeRef.y >= minimumDockChildHeight &&
+                                        root && root->IsDockSpace() &&
+                                        ImAbs(root->Size.y - main_viewport->WorkSize.y) < 0.5f &&
+                                        main_viewport->WorkSize.y >= minimumDockspaceHeight;
+            metricsNode->WantLockSizeOnce = canLockMetrics;
+            if (canLockMetrics) {
+                metricsNode->Size.y = metricsBarHeight;
+                metricsNode->SizeRef.y = metricsBarHeight;
+            }
+        }
+    }
+
+    // The compact metrics leaf touches the main horizontal splitter. ImGui's
+    // default minimum window height would otherwise prevent that splitter from
+    // moving upward once the metrics leaf reaches its fixed height.
+    const ImVec2 windowMinSize = ImGui::GetStyle().WindowMinSize;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(windowMinSize.x, minimumDockChildHeight));
     ImGuiID dockspace_id = ImGui::DockSpaceOverViewport(0, main_viewport);
+    ImGui::PopStyleVar();
 
     main_viewport->WorkSize.y += statusBarHeight;
 
@@ -1191,11 +1519,14 @@ void Application::Render(float deltaTime) {
             ImGui::DockBuilderSplitNode(dock_main_id, ImGuiDir_Up, 0.60f, &dock_id_top_half, &dock_id_bottom_half);
 
             ImGuiID dock_id_metrics, dock_id_top_content;
-            ImGui::DockBuilderSplitNode(dock_id_top_half, ImGuiDir_Down, 0.10f, &dock_id_metrics, &dock_id_top_content);
+            const float topHeight = ImMax(main_viewport->WorkSize.y * 0.60f, metricsBarHeight);
+            const float metricsRatio = ImClamp(metricsBarHeight / topHeight, 0.01f, 0.25f);
+            ImGui::DockBuilderSplitNode(dock_id_top_half, ImGuiDir_Down, metricsRatio, &dock_id_metrics, &dock_id_top_content);
 
             ImGuiDockNode* metrics_node = ImGui::DockBuilderGetNode(dock_id_metrics);
             if (metrics_node)
-                metrics_node->LocalFlags |= ImGuiDockNodeFlags_NoTabBar;
+                metrics_node->LocalFlags |= ImGuiDockNodeFlags_NoTabBar | ImGuiDockNodeFlags_NoResizeY |
+                                            ImGuiDockNodeFlags_NoDocking;
 
             ImGuiID dock_id_left_top, dock_id_viewport;
             ImGui::DockBuilderSplitNode(dock_id_top_content, ImGuiDir_Left, 0.17f, &dock_id_left_top, &dock_id_viewport);
@@ -1298,7 +1629,7 @@ void Application::Render(float deltaTime) {
                 static float initialFontSize = gloParent->mOptions->fontSize;
                 bool fontSizeChanged = (gloParent->mOptions->fontSize != initialFontSize);
                 if (fontSizeChanged) {
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.0f, 0.0f, 1.0f));
+                    ImGui::PushStyleColor(ImGuiCol_Text, UiTheme::textColor(UiTheme::TextRole::Error));
                 }
                 ImGui::Text("Font Size");
                 if (ImGui::IsItemHovered()) {
@@ -1310,7 +1641,7 @@ void Application::Render(float deltaTime) {
                 ImGui::TableNextColumn();
                 ImGui::SetNextItemWidth(-FLT_MIN);
                 if (fontSizeChanged) {
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.0f, 0.0f, 1.0f));
+                    ImGui::PushStyleColor(ImGuiCol_Text, UiTheme::textColor(UiTheme::TextRole::Error));
                 }
                 if (ImGui::SliderFloat("##FontSize", &gloParent->mOptions->fontSize, 10.0f, 32.0f, "%.1f px")) {
                     gloParent->mOptions->fontSize = std::clamp(gloParent->mOptions->fontSize, 10.0f, 32.0f);
@@ -1340,20 +1671,10 @@ void Application::Render(float deltaTime) {
                 ImGui::Text("Theme");
                 ImGui::TableNextColumn();
                 ImGui::SetNextItemWidth(-FLT_MIN);
-                static int themeIdx = gloParent->mOptions->theme;
+                int themeIdx = gloParent->mOptions->theme;
                 const char* themes[] = {"Dark", "Light", "Classic"};
                 if (ImGui::Combo("##Theme", &themeIdx, themes, IM_ARRAYSIZE(themes))) {
                     gloParent->mOptions->theme = themeIdx;
-                    if (themeIdx == 0) {
-                        ImGui::StyleColorsDark();
-                        ImPlot::StyleColorsDark();
-                    } else if (themeIdx == 1) {
-                        ImGui::StyleColorsLight();
-                        ImPlot::StyleColorsLight();
-                    } else if (themeIdx == 2) {
-                        ImGui::StyleColorsClassic();
-                        ImPlot::StyleColorsClassic();
-                    }
                 }
 
                 ImGui::TableNextRow();
@@ -1922,7 +2243,7 @@ void Application::Render(float deltaTime) {
     {
         leftPanel.render(this);
         ImGuiWindowFlags commonFlags = 0;
-        ImGui::Begin("Transition Editor", nullptr, commonFlags);
+        DockStyle::Begin("Transition Editor", nullptr, commonFlags);
         if (activeTrackIdx >= 0 && activeTrackIdx < (int)trackList.size()) {
             auto track = trackList[activeTrackIdx];
             if (track->trackData->isReferenceTrack()) {
@@ -1965,7 +2286,7 @@ void Application::Render(float deltaTime) {
             ImGui::Text("No active track.");
         ImGui::End();
 
-        ImGui::Begin("Viewport", nullptr, commonFlags);
+        DockStyle::Begin("Viewport", nullptr, commonFlags);
         ImVec2 imagePos(0.0f, 0.0f);
         ImVec2 viewportPanelSize = ImGui::GetContentRegionAvail();
         if (viewportPanelSize.x > 0 && viewportPanelSize.y > 0) {
@@ -2194,7 +2515,7 @@ void Application::Render(float deltaTime) {
                     std::string secLabel = "Section " + std::to_string(s + 1) + " (" + secTypeStr + ")";
 
                     if (sec->isStalled) {
-                        safetyWarnings.push_back({secLabel + ": Train stalled! Speed clamped.", ImVec4(1.0f, 0.4f, 0.4f, 1.0f)}); // Red
+                        safetyWarnings.push_back({secLabel + ": Train stalled! Speed clamped.", UiTheme::textColor(UiTheme::TextRole::Error)});
                     }
                     if (sec->isRestricted) {
                         bool forceViolated = false;
@@ -2210,7 +2531,7 @@ void Application::Render(float deltaTime) {
                             }
                         }
                         if (forceViolated) {
-                            safetyWarnings.push_back({secLabel + ": Forces exceed safety limits!", ImVec4(1.0f, 0.7f, 0.4f, 1.0f)}); // Orange
+                            safetyWarnings.push_back({secLabel + ": Forces exceed safety limits!", UiTheme::textColor(UiTheme::TextRole::Warning)});
                         }
 
                         bool radiusViolated = false;
@@ -2226,13 +2547,13 @@ void Application::Render(float deltaTime) {
                             }
                         }
                         if (radiusViolated) {
-                            safetyWarnings.push_back({secLabel + ": Exceeds minimum radius limit!", ImVec4(1.0f, 0.7f, 0.4f, 1.0f)}); // Orange
+                            safetyWarnings.push_back({secLabel + ": Exceeds minimum radius limit!", UiTheme::textColor(UiTheme::TextRole::Warning)});
                         }
                     }
                 }
 
                 if (curTrack->isAnyNodeNearGimbalLock) {
-                    safetyWarnings.push_back({"Track: Pitch near 90 deg; gimbal lock risk.", ImVec4(1.0f, 0.7f, 0.4f, 1.0f)}); // Orange (matching radius/force limits)
+                    safetyWarnings.push_back({"Track: Pitch near 90 deg; gimbal lock risk.", UiTheme::textColor(UiTheme::TextRole::Warning)});
                 }
 
                 ImGui::SetNextWindowPos(ImVec2(imagePos.x + 10.0f, imagePos.y + 10.0f));
@@ -2250,7 +2571,7 @@ void Application::Render(float deltaTime) {
                     ImGui::Separator();
 
                     if (safetyWarnings.empty()) {
-                        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "No active safety warnings or issues detected.");
+                        ImGui::TextColored(UiTheme::textColor(UiTheme::TextRole::Success), "No active safety warnings or issues detected.");
                     } else {
                         for (const auto& item : safetyWarnings) {
                             ImGui::PushStyleColor(ImGuiCol_Text, item.color);
@@ -2263,7 +2584,7 @@ void Application::Render(float deltaTime) {
             }
         }
 
-        ImGui::Begin("Graph List", nullptr, commonFlags);
+        DockStyle::Begin("Graph List", nullptr, commonFlags);
         if (activeTrackIdx >= 0 && activeTrackIdx < (int)trackList.size()) {
             if (trackList[activeTrackIdx]->trackData->isReferenceTrack())
                 ImGui::Text("Reference Track (Graphs Disabled)");
@@ -2275,7 +2596,7 @@ void Application::Render(float deltaTime) {
 
         bool focusResulting = graphView.getAndClearSwitchToResultingTab();
 
-        ImGui::Begin("Graphs", nullptr, commonFlags);
+        DockStyle::Begin("Graphs", nullptr, commonFlags);
         if (activeTrackIdx >= 0 && activeTrackIdx < (int)trackList.size()) {
             if (trackList[activeTrackIdx]->trackData->isReferenceTrack())
                 ImGui::Text("Reference Track (Graphs Disabled)");
@@ -2289,7 +2610,7 @@ void Application::Render(float deltaTime) {
 
         if (focusResulting)
             ImGui::SetNextWindowFocus();
-        ImGui::Begin("Resulting Graphs", nullptr, commonFlags);
+        DockStyle::Begin("Resulting Graphs", nullptr, commonFlags);
         if (activeTrackIdx >= 0 && activeTrackIdx < (int)trackList.size()) {
             if (trackList[activeTrackIdx]->trackData->isReferenceTrack())
                 ImGui::Text("Reference Track (Graphs Disabled)");
@@ -2301,7 +2622,7 @@ void Application::Render(float deltaTime) {
             ImGui::Text("No active track.");
         ImGui::End();
 
-        ImGui::Begin("Measurement Graphs", nullptr, commonFlags);
+        DockStyle::Begin("Measurement Graphs", nullptr, commonFlags);
         if (activeTrackIdx >= 0 && activeTrackIdx < (int)trackList.size()) {
             if (trackList[activeTrackIdx]->trackData->isReferenceTrack())
                 ImGui::Text("Reference Track (Graphs Disabled)");
@@ -2316,7 +2637,9 @@ void Application::Render(float deltaTime) {
             ImGui::Text("No active track.");
         ImGui::End();
 
-        ImGui::Begin("Metrics", nullptr, commonFlags | ImGuiWindowFlags_NoTitleBar);
+        const float metricsPaddingY = ImMax(0.0f, (metricsBarHeight - ImGui::GetFontSize()) * 0.5f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, metricsPaddingY));
+        DockStyle::Begin("Metrics", nullptr, commonFlags | ImGuiWindowFlags_NoTitleBar);
         if (activeTrackIdx >= 0 && activeTrackIdx < (int)trackList.size()) {
             trackHandler* hTrack = trackList[activeTrackIdx];
             if (hTrack->trackData->isReferenceTrack()) {
@@ -2404,7 +2727,7 @@ void Application::Render(float deltaTime) {
                             ImGui::SameLine(0, 0);
                             ImGui::TextUnformatted("    ");
                             ImGui::SameLine(0, 0);
-                            ImGui::TextColored(ImVec4(0, 1, 0, 1), "%s", speedStr.c_str());
+                            ImGui::TextColored(UiTheme::textColor(UiTheme::TextRole::Success), "%s", speedStr.c_str());
                         } else {
                             ImGui::TextUnformatted(groups[i].c_str());
                         }
@@ -2415,6 +2738,7 @@ void Application::Render(float deltaTime) {
         } else
             ImGui::Text("No active track.");
         ImGui::End();
+        ImGui::PopStyleVar();
     }
 
     if (gloParent->mOptions->showFPS) {
@@ -2467,9 +2791,9 @@ void Application::Render(float deltaTime) {
 
                 if (hasWarnings) {
                     const char* warnKeyName = ImGui::GetKeyName((ImGuiKey)gloParent->mOptions->keyOverlayWarnings);
-                    ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1.0f), "Warning: Safety warnings or issues detected (press %s in viewport)", warnKeyName ? warnKeyName : "Key");
+                    ImGui::TextColored(UiTheme::textColor(UiTheme::TextRole::Warning), "Warning: Safety warnings or issues detected (press %s in viewport)", warnKeyName ? warnKeyName : "Key");
                 } else {
-                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "System Status: Ready");
+                    ImGui::TextColored(UiTheme::textColor(UiTheme::TextRole::Success), "System Status: Ready");
                 }
 
                 // Align other elements to the right side of the status bar
@@ -2557,7 +2881,7 @@ void Application::RenderTrainGeneratorWindow() {
     }
 
     if (activeTrackIdx < 0 || activeTrackIdx >= static_cast<int>(trackList.size())) {
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Please select an active track first.");
+        ImGui::TextColored(UiTheme::textColor(UiTheme::TextRole::Error), "Please select an active track first.");
         ImGui::End();
         return;
     }
@@ -2635,7 +2959,7 @@ void Application::RenderMeasurementPointsWindow() {
     }
 
     if (activeTrackIdx < 0 || activeTrackIdx >= static_cast<int>(trackList.size())) {
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Please select an active track first.");
+        ImGui::TextColored(UiTheme::textColor(UiTheme::TextRole::Error), "Please select an active track first.");
         ImGui::End();
         return;
     }
@@ -2759,7 +3083,7 @@ void Application::RenderParametricTrackEditorWindow() {
     }
 
     if (activeTrackIdx < 0 || activeTrackIdx >= static_cast<int>(trackList.size())) {
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Please select an active track first.");
+        ImGui::TextColored(UiTheme::textColor(UiTheme::TextRole::Error), "Please select an active track first.");
         ImGui::End();
         return;
     }

@@ -113,6 +113,8 @@ private:
     void showInAppNotification(const std::string& msg);
     bool firstFrame = true;
     bool forceResetLayout = false;
+    float themeScale = 1.0f;
+    int appliedTheme = -1;
     bool showOptions = false;
     bool showTrainGenerator = false;
     bool showMeasurementPoints = false;

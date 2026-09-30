@@ -17,6 +17,7 @@
 */
 
 #include "leftpanel.h"
+#include "core/uitheme.h"
 #include "graphview.h"
 #include "renderer/viewport.h"
 #include "trackhandler.h"
@@ -28,6 +29,7 @@
 #include "seccurved.h"
 #include "mnode.h"
 #include "core/application.h"
+#include "core/dockstyle.h"
 #include "core/globalundohandler.h"
 #include "dummies.h"
 #include "portable-file-dialogs.h"
@@ -131,13 +133,13 @@ void LeftPanel::render(Application* app) {
     bool hasActiveTrack = activeTrackIdx >= 0 && activeTrackIdx < static_cast<int>(trackList.size());
 
     // 1. Tracks Window
-    if (ImGui::Begin("Tracks", nullptr, 0)) {
+    if (DockStyle::Begin("Tracks", nullptr, 0)) {
         renderProjectTab(app);
     }
     ImGui::End();
 
     // 2. Sections Window
-    if (ImGui::Begin("Sections", nullptr, 0)) {
+    if (DockStyle::Begin("Sections", nullptr, 0)) {
         if (!hasActiveTrack) {
             ImGui::TextDisabled("Please select or create a track first.");
         } else if (trackList[activeTrackIdx]->trackData->isReferenceTrack()) {
@@ -165,7 +167,7 @@ void LeftPanel::render(Application* app) {
     */
 
     // 4. Colors Window
-    if (ImGui::Begin("Colors", nullptr, 0)) {
+    if (DockStyle::Begin("Colors", nullptr, 0)) {
         if (!hasActiveTrack) {
             ImGui::TextDisabled("Please select or create a track first.");
         } else {
@@ -250,6 +252,7 @@ void LeftPanel::renderProjectTab(Application* app) {
 
     if (hasSelection) {
         ImGui::Separator();
+        ImGui::SetNextWindowBgAlpha(0.0f);
         ImGui::BeginChild("ProjectTrackProperties", ImVec2(0, 0), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
         renderTrackProperties(trackList[activeTrackIdx], app);
         ImGui::EndChild();
@@ -486,15 +489,22 @@ void LeftPanel::renderTrackTab(trackHandler* hTrack, Application* app) {
         }
         ImGui::TableSetColumnIndex(1);
         ImGui::Text("Anchor");
+        const ImVec4& sectionSurface = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+        const ImVec4& sectionAccent = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
         for (int i = 0; i < static_cast<int>(myTrack->lSections.size()); i++) {
             bool secStalled = myTrack->lSections[i]->isStalled;
             if (secStalled) {
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f)); // Highlight stalled sections
+                ImGui::PushStyleColor(ImGuiCol_Text, UiTheme::textColor(UiTheme::TextRole::Error)); // Highlight stalled sections
             }
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             bool isSelected = (selectedSectionIdx == i);
             std::string displayName = std::to_string(i) + ". " + myTrack->lSections[i]->sName;
+            if (isSelected) {
+                ImGui::PushStyleColor(ImGuiCol_Header, ImLerp(sectionSurface, sectionAccent, 0.18f));
+                ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImLerp(sectionSurface, sectionAccent, 0.24f));
+                ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImLerp(sectionSurface, sectionAccent, 0.30f));
+            }
             if (ImGui::Selectable((displayName + "##" + std::to_string(i)).c_str(), isSelected, ImGuiSelectableFlags_SpanAllColumns)) {
                 selectedSectionIdx = i;
                 myTrack->activeSection = myTrack->lSections[i];
@@ -503,6 +513,8 @@ void LeftPanel::renderTrackTab(trackHandler* hTrack, Application* app) {
                 if (gViewport && gloParent->mOptions->autoFocusOnSelection)
                     gViewport->focusOnSection(i);
             }
+            if (isSelected)
+                ImGui::PopStyleColor(3);
             ImGui::TableSetColumnIndex(1);
             const char* typeStr = "Unknown";
             switch (myTrack->lSections[i]->type) {
@@ -732,7 +744,7 @@ void LeftPanel::renderTrackTab(trackHandler* hTrack, Application* app) {
     if (selectedSectionIdx >= -1 && selectedSectionIdx < static_cast<int>(myTrack->lSections.size())) {
         ImGui::Separator();
         if (styleIsLocked) {
-            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.0f, 1.0f), "Track editing is disabled while a Custom 3D Style is active.");
+            ImGui::TextColored(UiTheme::textColor(UiTheme::TextRole::Warning), "Track editing is disabled while a Custom 3D Style is active.");
             ImGui::BeginDisabled();
         }
         if (selectedSectionIdx == -1)
@@ -745,6 +757,7 @@ void LeftPanel::renderTrackTab(trackHandler* hTrack, Application* app) {
 }
 
 void LeftPanel::renderSectionProperties(trackHandler* hTrack, section* sec, Application* app) {
+    ImGui::SetNextWindowBgAlpha(0.0f);
     ImGui::BeginChild("SectionPropsScroll");
     if (sec) {
         BEGIN_PROP_TABLE("SectionBaseProps")
